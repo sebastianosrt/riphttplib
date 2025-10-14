@@ -33,7 +33,7 @@ pub enum ConnectionState {
     Closed,
 }
 
-// Stream States (RFC 7540 Section 5.1) - Client perspective only
+// Stream States (RFC 7540 Section 5.1)
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamState {
     Idle,
@@ -243,7 +243,7 @@ impl H2Connection {
 
     pub async fn create_stream(&mut self) -> Result<u32, ProtocolError> {
         let stream_id = self.next_stream_id;
-        self.next_stream_id += 2; // Client uses odd numbers (1, 3, 5, ...)
+        self.next_stream_id += 2;
 
         let initial_window_size = self
             .remote_settings
@@ -282,7 +282,7 @@ impl H2Connection {
         headers: &[Header],
         end_stream: bool,
     ) -> Result<(), ProtocolError> {
-        let end_headers = true; // For simplicity, assume headers fit in one frame
+        let end_headers = true; // TODO add end_headers flag param, check that headers fit in one frame and if not send continuation
         let headers_frame = Frame::headers(stream_id, headers, end_stream, end_headers)?;
 
         self.send_frame(&headers_frame).await?;

@@ -125,23 +125,6 @@ impl H3Client {
         headers
     }
 
-    fn validate_headers(headers: &[Header]) -> Result<(), ProtocolError> {
-        for header in headers {
-            if header.name.is_empty() {
-                return Err(ProtocolError::MalformedHeaders(
-                    "Empty header name".to_string(),
-                ));
-            }
-            if header.name.chars().any(|c| c.is_whitespace()) {
-                return Err(ProtocolError::MalformedHeaders(format!(
-                    "Header name contains whitespace: {}",
-                    header.name
-                )));
-            }
-        }
-        Ok(())
-    }
-
     async fn send_request_inner(
         &self,
         connection: &mut H3Connection,
@@ -152,7 +135,6 @@ impl H3Client {
 
         let pseudo_headers = Self::prepare_pseudo_headers(request, target)?;
         let headers = Self::merge_headers(pseudo_headers, request);
-        Self::validate_headers(&headers)?;
 
         let headers_frame = crate::types::Frame::headers_h3(stream_id, &headers).map_err(|e| {
             ProtocolError::H3MessageError(format!("Failed to create headers: {}", e))
@@ -184,7 +166,6 @@ impl H3Client {
         if let Some(trailers) = request.trailers.as_ref() {
             if !trailers.is_empty() {
                 let normalized_trailers = Self::normalize_headers(trailers);
-                Self::validate_headers(&normalized_trailers)?;
                 let trailers_frame = crate::types::Frame::headers_h3(
                     stream_id,
                     &normalized_trailers,

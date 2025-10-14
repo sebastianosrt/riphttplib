@@ -43,6 +43,7 @@ impl Target {
         })
     }
 
+    // TODO rename to path_with_query
     pub fn path(&self) -> String {
         let mut value = self.url.path().to_string();
         if let Some(query) = self.url.query() {
@@ -116,6 +117,7 @@ impl Response {
         }
     }
 
+    // TODO consider removing
     pub fn new_with_protocol(status: u16, protocol_version: String) -> Self {
         Self {
             status,
@@ -127,10 +129,7 @@ impl Response {
     }
 }
 
-/// Builder-style representation of an HTTP request used across protocol clients.
-///
-/// Bodies are stored as raw [`bytes::Bytes`] so callers can decide the encoding.
-/// Helper methods allow optional bodies and trailers to be attached fluently.
+
 #[derive(Debug, Clone)]
 pub struct Request {
     pub method: String,
@@ -163,7 +162,7 @@ impl Request {
         self.body = Some(body.into());
         self
     }
-
+    // TODO maybe mergeable with the above
     pub fn with_optional_body<B: Into<Bytes>>(mut self, body: Option<B>) -> Self {
         self.body = body.map(Into::into);
         self
@@ -177,7 +176,6 @@ impl Request {
 
 #[async_trait]
 pub trait Protocol {
-    /// Send `request` to the provided `target`, returning the protocol-specific [`Response`].
     async fn send(&self, target: &Target, request: Request) -> Result<Response, ProtocolError>;
 }
 

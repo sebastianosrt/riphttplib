@@ -41,6 +41,7 @@ impl H1Client {
         Self::read_response(&mut stream, &request.method).await
     }
 
+    // TODO: write to stream or buffer and write all?
     async fn write_request(
         stream: &mut TransportStream,
         target: &Target,
@@ -106,7 +107,7 @@ impl H1Client {
         // End headers
         Self::write_to_stream(stream, CRLF.as_bytes()).await?;
 
-        // Write body
+        // Write body and trailers
         if let Some(body) = request.body.as_ref() {
             if use_chunked {
                 // Write as chunked
@@ -247,7 +248,6 @@ impl H1Client {
         headers: &[Header],
         method: &str,
     ) -> Result<(Bytes, Vec<Header>), ProtocolError> {
-        // HEAD responses should not have a body according to RFC 7231
         if method.to_uppercase() == "HEAD" {
             return Ok((Bytes::new(), Vec::new()));
         }
@@ -308,7 +308,7 @@ impl H1Client {
                 .map_err(|_| ProtocolError::InvalidResponse("Invalid chunk size".to_string()))?;
 
             if chunk_size == 0 {
-                // Read trailing headers (trailers)
+                // Read trailing headers
                 loop {
                     let mut line = String::new();
                     reader

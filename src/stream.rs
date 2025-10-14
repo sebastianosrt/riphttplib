@@ -12,7 +12,6 @@ use tokio_rustls::{client::TlsStream, TlsConnector};
 
 // pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
-// Insecure certificate verifier that accepts all certificates
 #[derive(Debug)]
 struct NoCertificateVerification;
 
@@ -84,7 +83,7 @@ pub async fn create_tls_stream(host: &str, port: u16, server_name: &str) -> io::
         .with_custom_certificate_verifier(std::sync::Arc::new(NoCertificateVerification))
         .with_no_client_auth();
 
-    // Enable HTTP/2 ALPN (and HTTP/1.1)
+    // Enable HTTP/2 ALPN
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     let connector = TlsConnector::from(std::sync::Arc::new(config));
@@ -149,6 +148,7 @@ pub async fn create_h2_tls_stream(
         .with_no_client_auth();
 
     // HTTP/2 ALPN only
+    // TODO handle h2c
     config.alpn_protocols = vec![b"h2".to_vec()];
 
     let connector = TlsConnector::from(std::sync::Arc::new(config));
@@ -159,6 +159,7 @@ pub async fn create_h2_tls_stream(
     Ok(TransportStream::Tls(tls_stream))
 }
 
+// TODO handle h2c
 pub async fn create_stream(scheme: &str, host: &str, port: u16) -> io::Result<TransportStream> {
     match scheme {
         "http" => create_tcp_stream(host, port).await,

@@ -125,23 +125,6 @@ impl H2Client {
         headers
     }
 
-    fn validate_headers(headers: &[Header]) -> Result<(), ProtocolError> {
-        for header in headers {
-            if header.name.is_empty() {
-                return Err(ProtocolError::MalformedHeaders(
-                    "Empty header name".to_string(),
-                ));
-            }
-            if header.name.chars().any(|c| c.is_whitespace()) {
-                return Err(ProtocolError::MalformedHeaders(format!(
-                    "Header name contains whitespace: {}",
-                    header.name
-                )));
-            }
-        }
-        Ok(())
-    }
-
     async fn send_request_inner(
         &self,
         connection: &mut H2Connection,
@@ -152,7 +135,6 @@ impl H2Client {
 
         let pseudo_headers = Self::prepare_pseudo_headers(request, target)?;
         let headers = Self::merge_headers(pseudo_headers, request);
-        Self::validate_headers(&headers)?;
 
         let has_body = request.body.as_ref().map_or(false, |body| !body.is_empty());
         let has_trailers = request
@@ -285,8 +267,8 @@ impl H2Client {
                     }
                 }
                 FrameType::H2(FrameTypeH2::RstStream) => {
-                    // This will now return a proper H2StreamError
                     connection.handle_frame(&frame).await?;
+                    // TODO is this correct?
                     unreachable!("handle_rst_stream_frame should return an error")
                 }
                 _ => {

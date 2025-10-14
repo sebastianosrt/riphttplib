@@ -272,6 +272,7 @@ impl Frame {
     pub fn serialize(&self) -> Result<Bytes, ProtocolError> {
         let frame_type_u8 = self.get_frame_type_u8();
 
+        // TODO maybe i can remove this check
         if self.payload.len() > MAX_FRAME_SIZE_UPPER_BOUND as usize {
             return Err(ProtocolError::H2FrameSizeError(
                 format!("Frame payload size {} exceeds maximum {}",

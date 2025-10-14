@@ -34,9 +34,9 @@ pub fn parse_header(header: &str) -> Option<Header> {
     if header.starts_with(':') {
         // For pseudo-headers, find the second colon
         if let Some(colon_pos) = header[1..].find(':') {
-            let split_pos = colon_pos + 1; // Position relative to the original string
-            let name = header[..=split_pos - 1].to_string(); // Include up to the second colon
-            let value = convert_escape_sequences(header[split_pos + 1..].trim_start()); // Skip the colon and trim
+            let split_pos = colon_pos + 1;
+            let name = header[..=split_pos - 1].to_string();
+            let value = convert_escape_sequences(header[split_pos + 1..].trim_start());
             Some(Header::new(name.to_lowercase(), value))
         } else {
             Some(Header::new_valueless(header.to_string().to_lowercase()))

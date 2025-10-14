@@ -48,6 +48,7 @@ pub struct H3Connection {
     pub control_send_stream: Option<SendStream>,
     pub control_recv_stream: Option<RecvStream>,
     // QPACK unidirectional streams (optional in this minimal implementation)
+    // TODO support bidirectional, use quinn
     pub qpack_encoder_send: Option<SendStream>,
     pub qpack_decoder_send: Option<SendStream>,
     pub qpack_encoder_recv: Option<RecvStream>,
