@@ -13,11 +13,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("HTTP/2 Basic Demo");
 
     let client = H2Client::new();
-    // let target = parse_target("https://httpbin.org/post");
-    let target = parse_target("https://localhost:51443")?;
+    let target = parse_target("https://httpbin.org/post");
+    // let target = parse_target("https://localhost:51443")?;
 
     let headers = vec![Header::new("host".to_string(), "aaaaaaaaa".to_string())];
-    let trailers = vec![Header::new("hosta".to_string(), "xxxxxxxx".to_string())];
+    // let trailers = vec![Header::new("hosta".to_string(), "xxxxxxxx".to_string())];
+    let trailers = vec![];
 
     // Test basic GET request
     println!("\n🔄 Testing HTTP/2 request...");
@@ -27,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_body(Bytes::from("aaaaaaaa".to_string()))
         .with_trailers(Some(trailers));
 
-    match client.send_request(&target, request).await {
+    match client.send_request(&target?, request).await {
         Ok(response) => {
             println!("✅ HTTP/2 GET request successful!");
             println!("   Status: {}", response.status);

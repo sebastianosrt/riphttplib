@@ -1,4 +1,4 @@
-use crate::types::{Frame, FrameType, FrameTypeH3, Header, ProtocolError};
+use crate::types::{FrameH3, FrameType, FrameTypeH3, Header, ProtocolError};
 use bytes::{BufMut, Bytes, BytesMut};
 use ls_qpack_rs::decoder::Decoder;
 use ls_qpack_rs::encoder::Encoder;
@@ -18,50 +18,49 @@ pub const SETTINGS_QPACK_MAX_TABLE_CAPACITY: u64 = 0x1;
 pub const SETTINGS_MAX_FIELD_SECTION_SIZE: u64 = 0x6;
 pub const SETTINGS_QPACK_BLOCKED_STREAMS: u64 = 0x7;
 
-impl Frame {
-    pub fn new_h3(frame_type: FrameTypeH3, stream_id: u32, payload: Bytes) -> Self {
+impl FrameH3 {
+    pub fn new(frame_type: FrameTypeH3, stream_id: u32, payload: Bytes) -> Self {
         Self {
             frame_type: FrameType::H3(frame_type),
-            flags: 0, // HTTP/3 doesn't use flags like HTTP/2
             stream_id,
             payload,
         }
     }
 
-    pub fn data_h3(stream_id: u32, data: Bytes) -> Self {
-        Self::new_h3(FrameTypeH3::Data, stream_id, data)
+    pub fn data(stream_id: u32, data: Bytes) -> Self {
+        Self::new(FrameTypeH3::Data, stream_id, data)
     }
 
-    pub fn headers_h3(stream_id: u32, headers: &[Header]) -> Result<Self, ProtocolError> {
+    pub fn headers(stream_id: u32, headers: &[Header]) -> Result<Self, ProtocolError> {
         let payload = Self::encode_headers_qpack(headers)?;
-        Ok(Self::new_h3(FrameTypeH3::Headers, stream_id, payload))
+        Ok(Self::new(FrameTypeH3::Headers, stream_id, payload))
     }
 
-    pub fn settings_h3(settings: &[(u64, u64)]) -> Self {
+    pub fn settings(settings: &[(u64, u64)]) -> Self {
         let mut payload = BytesMut::new();
         for &(id, value) in settings {
             Self::encode_varint(&mut payload, id);
             Self::encode_varint(&mut payload, value);
         }
-        Self::new_h3(FrameTypeH3::Settings, 0, payload.freeze())
+        Self::new(FrameTypeH3::Settings, 0, payload.freeze())
     }
 
-    pub fn goaway_h3(stream_id: u32, id: u64) -> Self {
+    pub fn goaway(stream_id: u32, id: u64) -> Self {
         let mut payload = BytesMut::new();
         Self::encode_varint(&mut payload, id);
-        Self::new_h3(FrameTypeH3::GoAway, stream_id, payload.freeze())
+        Self::new(FrameTypeH3::GoAway, stream_id, payload.freeze())
     }
 
     pub fn max_push_id(stream_id: u32, push_id: u64) -> Self {
         let mut payload = BytesMut::new();
         Self::encode_varint(&mut payload, push_id);
-        Self::new_h3(FrameTypeH3::MaxPushId, stream_id, payload.freeze())
+        Self::new(FrameTypeH3::MaxPushId, stream_id, payload.freeze())
     }
 
     pub fn cancel_push(stream_id: u32, push_id: u64) -> Self {
         let mut payload = BytesMut::new();
         Self::encode_varint(&mut payload, push_id);
-        Self::new_h3(FrameTypeH3::CancelPush, stream_id, payload.freeze())
+        Self::new(FrameTypeH3::CancelPush, stream_id, payload.freeze())
     }
 
     pub fn push_promise(
@@ -75,7 +74,7 @@ impl Frame {
         let header_block = Self::encode_headers_qpack(headers)?;
         payload.put_slice(&header_block);
 
-        Ok(Self::new_h3(
+        Ok(Self::new(
             FrameTypeH3::PushPromise,
             stream_id,
             payload.freeze(),
@@ -145,7 +144,7 @@ impl Frame {
         }
     }
 
-    pub fn decode_headers_h3(&self) -> Result<Vec<Header>, ProtocolError> {
+    pub fn decode_headers(&self) -> Result<Vec<Header>, ProtocolError> {
         match &self.frame_type {
             FrameType::H3(FrameTypeH3::Headers) => Self::decode_headers_qpack(&self.payload),
             _ => Err(ProtocolError::RequestFailed(
@@ -154,7 +153,7 @@ impl Frame {
         }
     }
 
-    pub fn serialize_h3(&self) -> Result<Bytes, ProtocolError> {
+    pub fn serialize(&self) -> Result<Bytes, ProtocolError> {
         let frame_type = self.get_frame_type_u64();
         let length = self.payload.len() as u64;
 
@@ -172,7 +171,7 @@ impl Frame {
         Ok(result.freeze())
     }
 
-    pub fn parse_h3(data: &[u8]) -> Result<(Self, usize), ProtocolError> {
+    pub fn parse(data: &[u8]) -> Result<(Self, usize), ProtocolError> {
         if data.is_empty() {
             return Err(ProtocolError::InvalidResponse(
                 "Empty frame data".to_string(),
@@ -218,9 +217,8 @@ impl Frame {
         let total_consumed = offset + length as usize;
 
         Ok((
-            Frame {
+            FrameH3 {
                 frame_type: FrameType::H3(frame_type),
-                flags: 0,
                 stream_id: 0, // Stream ID is handled at the QUIC layer in HTTP/3
                 payload,
             },

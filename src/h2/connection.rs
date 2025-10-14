@@ -1,6 +1,6 @@
 use crate::h2::framing::FRAME_HEADER_SIZE;
 use crate::stream::{create_h2_tls_stream, TransportStream};
-use crate::types::{Frame, FrameType, FrameTypeH2, Header, ProtocolError, Target, H2ErrorCode, H2StreamErrorKind, H2ConnectionErrorKind};
+use crate::types::{FrameH2, FrameType, FrameTypeH2, Header, ProtocolError, Target, H2ErrorCode, H2StreamErrorKind, H2ConnectionErrorKind};
 use bytes::Bytes;
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -130,7 +130,7 @@ impl H2Connection {
         self.write_to_stream(CONNECTION_PREFACE).await?;
 
         // 2. Send initial SETTINGS frame
-        let settings_frame = Frame::settings(&[
+        let settings_frame = FrameH2::settings(&[
             (
                 SETTINGS_HEADER_TABLE_SIZE,
                 self.settings[&SETTINGS_HEADER_TABLE_SIZE],
@@ -162,7 +162,7 @@ impl H2Connection {
         Ok(())
     }
 
-    async fn handle_settings_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_settings_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         if let FrameType::H2(FrameTypeH2::Settings) = &frame.frame_type {
             if frame.is_ack() {
                 // Settings ACK - no action needed
@@ -185,7 +185,7 @@ impl H2Connection {
             }
 
             // Send SETTINGS ACK response
-            let settings_ack = Frame::settings_ack();
+            let settings_ack = FrameH2::settings_ack();
             self.send_frame(&settings_ack).await?;
         }
         Ok(())
@@ -283,7 +283,7 @@ impl H2Connection {
         end_stream: bool,
     ) -> Result<(), ProtocolError> {
         let end_headers = true; // TODO add end_headers flag param, check that headers fit in one frame and if not send continuation
-        let headers_frame = Frame::headers(stream_id, headers, end_stream, end_headers)?;
+        let headers_frame = FrameH2::headers(stream_id, headers, end_stream, end_headers)?;
 
         self.send_frame(&headers_frame).await?;
 
@@ -323,7 +323,7 @@ impl H2Connection {
         }
         self.connection_window_size -= data.len() as i32;
 
-        let data_frame = Frame::data(stream_id, Bytes::copy_from_slice(data), end_stream);
+        let data_frame = FrameH2::data(stream_id, Bytes::copy_from_slice(data), end_stream);
         self.send_frame(&data_frame).await?;
 
         if end_stream {
@@ -345,7 +345,7 @@ impl H2Connection {
         stream_id: u32,
         increment: u32,
     ) -> Result<(), ProtocolError> {
-        let window_update_frame = Frame::window_update(stream_id, increment)?;
+        let window_update_frame = FrameH2::window_update(stream_id, increment)?;
         self.send_frame(&window_update_frame).await?;
 
         if stream_id == 0 {
@@ -360,7 +360,7 @@ impl H2Connection {
     }
 
     pub async fn send_rst(&mut self, stream_id: u32, error_code: u32) -> Result<(), ProtocolError> {
-        let rst_frame = Frame::rst(stream_id, error_code);
+        let rst_frame = FrameH2::rst(stream_id, error_code);
         self.send_frame(&rst_frame).await?;
 
         if let Some(stream) = self.streams.get_mut(&stream_id) {
@@ -371,12 +371,12 @@ impl H2Connection {
     }
 
     pub async fn send_ping(&mut self, data: [u8; 8]) -> Result<(), ProtocolError> {
-        let ping_frame = Frame::ping(data);
+        let ping_frame = FrameH2::ping(data);
         self.send_frame(&ping_frame).await
     }
 
     pub async fn send_ping_ack(&mut self, data: [u8; 8]) -> Result<(), ProtocolError> {
-        let ping_ack_frame = Frame::ping_ack(data);
+        let ping_ack_frame = FrameH2::ping_ack(data);
         self.send_frame(&ping_ack_frame).await
     }
 
@@ -386,14 +386,14 @@ impl H2Connection {
         error_code: u32,
         debug_data: Option<&[u8]>,
     ) -> Result<(), ProtocolError> {
-        let goaway_frame = Frame::goaway(last_stream_id, error_code, debug_data);
+        let goaway_frame = FrameH2::goaway(last_stream_id, error_code, debug_data);
         self.send_frame(&goaway_frame).await?;
 
         self.state = ConnectionState::Closed;
         Ok(())
     }
 
-    pub async fn handle_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    pub async fn handle_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         match &frame.frame_type {
             FrameType::H2(FrameTypeH2::Headers) => self.handle_headers_frame(frame).await,
             FrameType::H2(FrameTypeH2::Data) => self.handle_data_frame(frame).await,
@@ -408,7 +408,7 @@ impl H2Connection {
         }
     }
 
-    async fn handle_headers_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_headers_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         let stream_id = frame.stream_id;
 
         // Create stream if it doesn't exist
@@ -441,7 +441,7 @@ impl H2Connection {
     }
 
     // TODO: rework
-    async fn handle_data_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_data_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         let stream_id = frame.stream_id;
         let data_size = frame.payload.len() as u32;
 
@@ -483,7 +483,7 @@ impl H2Connection {
         Ok(())
     }
 
-    async fn handle_window_update_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_window_update_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         if frame.payload.len() != 4 {
             return Err(ProtocolError::InvalidResponse(
                 "Invalid WINDOW_UPDATE frame size".to_string(),
@@ -508,7 +508,7 @@ impl H2Connection {
         Ok(())
     }
 
-    async fn handle_rst_stream_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_rst_stream_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         if frame.payload.len() != 4 {
             return Err(ProtocolError::H2ProtocolError(
                 "RST_STREAM frame must have 4-byte payload".to_string()
@@ -532,7 +532,7 @@ impl H2Connection {
         ))
     }
 
-    async fn handle_ping_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_ping_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         if !frame.is_ack() {
             // Send PING ACK with same data
             if frame.payload.len() == 8 {
@@ -544,7 +544,7 @@ impl H2Connection {
         Ok(())
     }
 
-    async fn handle_goaway_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_goaway_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         if frame.payload.len() < 8 {
             return Err(ProtocolError::InvalidResponse(
                 "Invalid GOAWAY frame size".to_string(),
@@ -580,12 +580,12 @@ impl H2Connection {
         ))
     }
 
-    pub async fn send_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    pub async fn send_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         let serialized = frame.serialize()?;
         self.write_to_stream(&serialized).await
     }
 
-    pub async fn read_frame(&mut self) -> Result<Frame, ProtocolError> {
+    pub async fn read_frame(&mut self) -> Result<FrameH2, ProtocolError> {
         // Read frame header (9 bytes)
         let mut header_buf = [0u8; FRAME_HEADER_SIZE];
         self.read_from_stream(&mut header_buf).await?;
@@ -605,7 +605,7 @@ impl H2Connection {
         frame_buf.extend_from_slice(&header_buf);
         frame_buf.extend_from_slice(&payload_buf);
 
-        Frame::parse(&frame_buf)
+        FrameH2::parse(&frame_buf)
     }
 
     async fn write_to_stream(&mut self, data: &[u8]) -> Result<(), ProtocolError> {

@@ -435,10 +435,25 @@ pub enum FrameTypeH3 {
     MaxPushId,   // 0xd
 }
 
+// #[derive(Debug, Clone)]
+// pub struct Frame {
+//     pub frame_type: FrameType,
+//     pub flags: u8,
+//     pub stream_id: u32,
+//     pub payload: Bytes,
+// }
+
 #[derive(Debug, Clone)]
-pub struct Frame {
+pub struct FrameH2 {
     pub frame_type: FrameType,
     pub flags: u8,
+    pub stream_id: u32,
+    pub payload: Bytes,
+}
+
+#[derive(Debug, Clone)]
+pub struct FrameH3 {
+    pub frame_type: FrameType,
     pub stream_id: u32,
     pub payload: Bytes,
 }

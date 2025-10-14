@@ -136,10 +136,10 @@ impl H3Client {
         let pseudo_headers = Self::prepare_pseudo_headers(request, target)?;
         let headers = Self::merge_headers(pseudo_headers, request);
 
-        let headers_frame = crate::types::Frame::headers_h3(stream_id, &headers).map_err(|e| {
+        let headers_frame = crate::types::FrameH3::headers(stream_id, &headers).map_err(|e| {
             ProtocolError::H3MessageError(format!("Failed to create headers: {}", e))
         })?;
-        let serialized_headers = headers_frame.serialize_h3().map_err(|e| {
+        let serialized_headers = headers_frame.serialize().map_err(|e| {
             ProtocolError::H3MessageError(format!("Failed to serialize headers: {}", e))
         })?;
         send_stream
@@ -151,8 +151,8 @@ impl H3Client {
 
         if let Some(body) = request.body.as_ref() {
             if !body.is_empty() {
-                let data_frame = crate::types::Frame::data_h3(stream_id, body.clone());
-                let serialized_data = data_frame.serialize_h3().map_err(|e| {
+                let data_frame = crate::types::FrameH3::data(stream_id, body.clone());
+                let serialized_data = data_frame.serialize().map_err(|e| {
                     ProtocolError::H3MessageError(format!("Failed to serialize data: {}", e))
                 })?;
                 send_stream.write_all(&serialized_data).await.map_err(|e| {
@@ -166,14 +166,14 @@ impl H3Client {
         if let Some(trailers) = request.trailers.as_ref() {
             if !trailers.is_empty() {
                 let normalized_trailers = Self::normalize_headers(trailers);
-                let trailers_frame = crate::types::Frame::headers_h3(
+                let trailers_frame = crate::types::FrameH3::headers(
                     stream_id,
                     &normalized_trailers,
                 )
                 .map_err(|e| {
                     ProtocolError::H3MessageError(format!("Failed to create trailers: {}", e))
                 })?;
-                let serialized_trailers = trailers_frame.serialize_h3().map_err(|e| {
+                let serialized_trailers = trailers_frame.serialize().map_err(|e| {
                     ProtocolError::H3MessageError(format!("Failed to serialize trailers: {}", e))
                 })?;
                 send_stream
@@ -225,7 +225,7 @@ impl H3Client {
 
             let frame = match frame_opt {
                 Some(frame) => frame,
-                None => {
+                _ => {
                     // Stream completed normally
                     break;
                 }
@@ -233,7 +233,7 @@ impl H3Client {
 
             match &frame.frame_type {
                 FrameType::H3(FrameTypeH3::Headers) => {
-                    let decoded_headers = frame.decode_headers_h3()?;
+                    let decoded_headers = frame.decode_headers()?;
 
                     if !headers_received {
                         for header in &decoded_headers {

@@ -2,11 +2,17 @@ use crate::h3::framing::{
     SETTINGS_MAX_FIELD_SECTION_SIZE, SETTINGS_QPACK_BLOCKED_STREAMS,
     SETTINGS_QPACK_MAX_TABLE_CAPACITY,
 };
-use crate::stream::create_quic_connection;
-use crate::types::{Frame, FrameType, FrameTypeH3, Header, ProtocolError, Target};
+use crate::types::{FrameH3, FrameType, FrameTypeH3, Header, ProtocolError, Target};
 use bytes::{Bytes, BytesMut};
-use quinn::{Connection, RecvStream, SendStream};
+use quinn::{Connection, RecvStream, SendStream, ClientConfig as QuinnClientConfig, Endpoint};
 use std::collections::HashMap;
+use crate::stream::NoCertificateVerification;
+use std::io;
+
+use std::sync::Arc;
+use tokio::net::lookup_host;
+use quinn::crypto::rustls::QuicClientConfig;
+use rustls::ClientConfig;
 
 // Default HTTP/3 Settings Values
 pub const DEFAULT_QPACK_MAX_TABLE_CAPACITY: u64 = 0;
@@ -56,6 +62,47 @@ pub struct H3Connection {
 }
 
 impl H3Connection {
+    pub async fn create_quic_connection(
+        host: &str,
+        port: u16,
+        server_name: &str,
+    ) -> io::Result<Connection> {
+        let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())?;
+
+        let mut rustls_config = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
+            .with_no_client_auth();
+        rustls_config.alpn_protocols = vec![b"h3".to_vec()];
+
+        let quic_crypto = QuicClientConfig::try_from(rustls_config)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let client_config = QuinnClientConfig::new(Arc::new(quic_crypto));
+        endpoint.set_default_client_config(client_config);
+
+        // Resolve hostname to addresses (DNS) and pick the first
+        let mut addrs = lookup_host((host, port)).await.map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("DNS lookup failed for {}:{}: {}", host, port, e),
+            )
+        })?;
+        let addr = addrs.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("No addresses found for {}:{}", host, port),
+            )
+        })?;
+
+        let connecting = endpoint
+            .connect(addr, server_name)
+            .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
+        connecting
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))
+    }
+
+    
     pub async fn connect(target: &Target) -> Result<Self, ProtocolError> {
         let host = target
             .host()
@@ -64,7 +111,7 @@ impl H3Connection {
             .port()
             .ok_or_else(|| ProtocolError::InvalidTarget("Target missing port".to_string()))?;
 
-        let connection = create_quic_connection(host, port, host)
+        let connection = H3Connection::create_quic_connection(host, port, host)
             .await
             .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?;
 
@@ -129,7 +176,7 @@ impl H3Connection {
         }
 
         // 4. Send initial SETTINGS frame
-        let settings_frame = Frame::settings_h3(&[
+        let settings_frame = FrameH3::settings(&[
             (
                 SETTINGS_QPACK_MAX_TABLE_CAPACITY,
                 self.settings[&SETTINGS_QPACK_MAX_TABLE_CAPACITY],
@@ -267,9 +314,9 @@ impl H3Connection {
         Ok((val, consumed))
     }
 
-    async fn send_control_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    async fn send_control_frame(&mut self, frame: &FrameH3) -> Result<(), ProtocolError> {
         if let Some(ref mut send_stream) = self.control_send_stream {
-            let serialized = frame.serialize_h3()?;
+            let serialized = frame.serialize()?;
 
             send_stream.write_all(&serialized).await.map_err(|e| {
                 ProtocolError::ConnectionFailed(format!("Failed to send control frame: {}", e))
@@ -307,22 +354,22 @@ impl H3Connection {
         stream_id: u32,
         headers: &[Header],
     ) -> Result<(), ProtocolError> {
-        let headers_frame = Frame::headers_h3(stream_id, headers)?;
+        let headers_frame = FrameH3::headers(stream_id, headers)?;
         self.send_request_frame(stream_id, &headers_frame).await
     }
 
     pub async fn send_data(&mut self, stream_id: u32, data: &Bytes) -> Result<(), ProtocolError> {
-        let data_frame = Frame::data_h3(stream_id, data.clone());
+        let data_frame = FrameH3::data(stream_id, data.clone());
         self.send_request_frame(stream_id, &data_frame).await
     }
 
     async fn send_request_frame(
         &mut self,
         stream_id: u32,
-        frame: &Frame,
+        frame: &FrameH3,
     ) -> Result<(), ProtocolError> {
         // Route request frames over the correct bidirectional request stream
-        let _ = frame.serialize_h3()?;
+        let _ = frame.serialize()?;
         // We don't store the SendStream; callers should write directly, or we can
         // extend this to store SendStream if needed in future.
         Err(ProtocolError::RequestFailed(format!(
@@ -331,7 +378,7 @@ impl H3Connection {
         )))
     }
 
-    pub async fn read_frame(&mut self) -> Result<Frame, ProtocolError> {
+    pub async fn read_frame(&mut self) -> Result<FrameH3, ProtocolError> {
         if let Some(ref mut recv_stream) = self.control_recv_stream {
             let mut buf = [0u8; 8192]; // Buffer for reading control frames
 
@@ -348,7 +395,7 @@ impl H3Connection {
                     ProtocolError::InvalidResponse("Control stream closed unexpectedly".to_string())
                 })?;
 
-            let (frame, _consumed) = Frame::parse_h3(&buf[..n])?;
+            let (frame, _consumed) = FrameH3::parse(&buf[..n])?;
             Ok(frame)
         } else {
             Err(ProtocolError::RequestFailed(
@@ -357,7 +404,7 @@ impl H3Connection {
         }
     }
 
-    pub async fn read_request_frame(&mut self, stream_id: u32) -> Result<Option<Frame>, ProtocolError> {
+    pub async fn read_request_frame(&mut self, stream_id: u32) -> Result<Option<FrameH3>, ProtocolError> {
         let stream_info = self.streams.get_mut(&stream_id).ok_or_else(|| {
             ProtocolError::RequestFailed(format!("Unknown request stream {}", stream_id))
         })?;
@@ -369,7 +416,7 @@ impl H3Connection {
 
         loop {
             // Try to parse a frame from current buffer
-            if let Some((frame, consumed)) = Self::try_parse_h3_frame(&*buf)? {
+            if let Some((frame, consumed)) = Self::try_parse_frame(&*buf)? {
                 // advance buffer by consumed (drain)
                 let _ = buf.split_to(consumed);
                 return Ok(Some(frame));
@@ -400,7 +447,7 @@ impl H3Connection {
         }
     }
 
-    fn try_parse_h3_frame(buf: &BytesMut) -> Result<Option<(Frame, usize)>, ProtocolError> {
+    fn try_parse_frame(buf: &BytesMut) -> Result<Option<(FrameH3, usize)>, ProtocolError> {
         if buf.is_empty() {
             return Ok(None);
         }
@@ -440,16 +487,15 @@ impl H3Connection {
             }
         };
 
-        let frame = Frame {
+        let frame = FrameH3 {
             frame_type: FrameType::H3(frame_type),
-            flags: 0,
             stream_id: 0,
             payload,
         };
         Ok(Some((frame, header_len + len as usize)))
     }
 
-    pub async fn handle_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    pub async fn handle_frame(&mut self, frame: &FrameH3) -> Result<(), ProtocolError> {
         match &frame.frame_type {
             FrameType::H3(FrameTypeH3::Settings) => self.handle_settings_frame(frame).await,
             FrameType::H3(FrameTypeH3::Headers) => self.handle_headers_frame(frame).await,
@@ -462,7 +508,7 @@ impl H3Connection {
         }
     }
 
-    async fn handle_settings_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_settings_frame(&mut self, frame: &FrameH3) -> Result<(), ProtocolError> {
         let mut offset = 0;
         while offset + 2 <= frame.payload.len() {
             let (setting_id, consumed) = Self::decode_varint_from_slice(&frame.payload[offset..])
@@ -500,23 +546,23 @@ impl H3Connection {
         Ok(())
     }
 
-    async fn handle_headers_frame(&mut self, _frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_headers_frame(&mut self, _frame: &FrameH3) -> Result<(), ProtocolError> {
         // In a real implementation, you'd decode the headers and update stream state
         Ok(())
     }
 
-    async fn handle_data_frame(&mut self, _frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_data_frame(&mut self, _frame: &FrameH3) -> Result<(), ProtocolError> {
         // In a real implementation, you'd handle the data and update stream state
         Ok(())
     }
 
-    async fn handle_goaway_frame(&mut self, _frame: &Frame) -> Result<(), ProtocolError> {
+    async fn handle_goaway_frame(&mut self, _frame: &FrameH3) -> Result<(), ProtocolError> {
         self.state = ConnectionState::Closed;
         Ok(())
     }
 
     pub async fn send_goaway(&mut self, stream_id: u64) -> Result<(), ProtocolError> {
-        let goaway_frame = Frame::goaway_h3(0, stream_id);
+        let goaway_frame = FrameH3::goaway(0, stream_id);
         self.send_control_frame(&goaway_frame).await?;
         self.state = ConnectionState::Closed;
         Ok(())

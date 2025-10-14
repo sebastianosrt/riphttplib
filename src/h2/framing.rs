@@ -1,4 +1,4 @@
-use crate::types::{Frame, FrameType, FrameTypeH2, Header, ProtocolError};
+use crate::types::{FrameH2, FrameType, FrameTypeH2, Header, ProtocolError};
 use bytes::{BufMut, Bytes, BytesMut};
 use hpack::{Decoder, Encoder};
 
@@ -40,7 +40,7 @@ pub const PRIORITY_FLAG: u8 = 0x20; // HEADERS
 pub const DEFAULT_MAX_FRAME_SIZE: u32 = 16384; // 2^14
 pub const MAX_FRAME_SIZE_UPPER_BOUND: u32 = 16777215; // 2^24 - 1
 
-impl Frame {
+impl FrameH2 {
     pub fn new(frame_type: FrameTypeH2, flags: u8, stream_id: u32, payload: Bytes) -> Self {
         Self {
             frame_type: FrameType::H2(frame_type),
@@ -357,7 +357,7 @@ impl Frame {
         let payload =
             Bytes::copy_from_slice(&data[FRAME_HEADER_SIZE..FRAME_HEADER_SIZE + length as usize]);
 
-        Ok(Frame {
+        Ok(FrameH2 {
             frame_type: FrameType::H2(frame_type),
             flags,
             stream_id,

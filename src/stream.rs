@@ -1,19 +1,15 @@
-use quinn::crypto::rustls::QuicClientConfig;
-use quinn::{ClientConfig as QuinnClientConfig, Connection, Endpoint};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::ServerName;
 use rustls::DigitallySignedStruct;
 use rustls::ClientConfig;
 use std::io;
-use std::sync::Arc;
-use tokio::net::lookup_host;
 use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
 
 // pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
-struct NoCertificateVerification;
+pub struct NoCertificateVerification;
 
 impl ServerCertVerifier for NoCertificateVerification {
     fn verify_server_cert(
@@ -94,46 +90,6 @@ pub async fn create_tls_stream(host: &str, port: u16, server_name: &str) -> io::
     Ok(TransportStream::Tls(tls_stream))
 }
 
-pub async fn create_quic_connection(
-    host: &str,
-    port: u16,
-    server_name: &str,
-) -> io::Result<Connection> {
-    let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())?;
-
-    let mut rustls_config = ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
-        .with_no_client_auth();
-    rustls_config.alpn_protocols = vec![b"h3".to_vec()];
-
-    let quic_crypto = QuicClientConfig::try_from(rustls_config)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    let client_config = QuinnClientConfig::new(Arc::new(quic_crypto));
-    endpoint.set_default_client_config(client_config);
-
-    // Resolve hostname to addresses (DNS) and pick the first
-    let mut addrs = lookup_host((host, port)).await.map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("DNS lookup failed for {}:{}: {}", host, port, e),
-        )
-    })?;
-    let addr = addrs.next().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("No addresses found for {}:{}", host, port),
-        )
-    })?;
-
-    let connecting = endpoint
-        .connect(addr, server_name)
-        .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-    connecting
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))
-}
-
 pub async fn create_h2_tls_stream(
     host: &str,
     port: u16,
@@ -164,7 +120,7 @@ pub async fn create_stream(scheme: &str, host: &str, port: u16) -> io::Result<Tr
     match scheme {
         "http" => create_tcp_stream(host, port).await,
         "https" => create_tls_stream(host, port, host).await,
-        "h2" => create_h2_tls_stream(host, port, host).await,
+        "h2" => create_h2_tls_stream(host, port, host).await, // TODO what is that?
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("Unsupported scheme: {}", scheme),
