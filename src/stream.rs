@@ -3,13 +3,12 @@ use quinn::{ClientConfig as QuinnClientConfig, Connection, Endpoint};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::ServerName;
 use rustls::DigitallySignedStruct;
-use rustls::{ClientConfig, RootCertStore};
+use rustls::ClientConfig;
 use std::io;
 use std::sync::Arc;
 use tokio::net::lookup_host;
 use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
-use webpki_roots::TLS_SERVER_ROOTS;
 
 // pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -103,12 +102,9 @@ pub async fn create_quic_connection(
 ) -> io::Result<Connection> {
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())?;
 
-    let root_store = RootCertStore {
-        roots: TLS_SERVER_ROOTS.to_vec(),
-    };
-
     let mut rustls_config = ClientConfig::builder()
-        .with_root_certificates(Arc::new(root_store))
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
         .with_no_client_auth();
     rustls_config.alpn_protocols = vec![b"h3".to_vec()];
 

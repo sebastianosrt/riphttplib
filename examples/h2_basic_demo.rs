@@ -16,8 +16,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let target = parse_target("https://httpbin.org/post");
     let target = parse_target("https://localhost:51443")?;
 
-    let headers = vec![Header::new("aaaaa".to_string(), "aaaaaaaaa".to_string())];
-    let trailers = vec![Header::new("host".to_string(), "xxxxxxxx".to_string())];
+    let headers = vec![Header::new("host".to_string(), "aaaaaaaaa".to_string())];
+    let trailers = vec![Header::new("hosta".to_string(), "xxxxxxxx".to_string())];
 
     // Test basic GET request
     println!("\n🔄 Testing HTTP/2 request...");

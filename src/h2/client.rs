@@ -1,6 +1,7 @@
 use crate::h2::connection::H2Connection;
 use crate::types::{
     FrameType, FrameTypeH2, Header, Protocol, ProtocolError, Request, Response, Target,
+    H2StreamErrorKind,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -163,7 +164,9 @@ impl H2Client {
         connection
             .send_headers(stream_id, &headers, end_stream)
             .await
-            .map_err(|e| ProtocolError::H2StreamError(format!("Failed to send headers: {}", e)))?;
+            .map_err(|e| ProtocolError::H2StreamError(
+                H2StreamErrorKind::ProtocolViolation(format!("Failed to send headers: {}", e))
+            ))?;
 
         if let Some(body) = request.body.as_ref() {
             if !body.is_empty() {
@@ -172,7 +175,9 @@ impl H2Client {
                     .send_data(stream_id, body, end_stream)
                     .await
                     .map_err(|e| {
-                        ProtocolError::H2StreamError(format!("Failed to send data: {}", e))
+                        ProtocolError::H2StreamError(
+                            H2StreamErrorKind::ProtocolViolation(format!("Failed to send data: {}", e))
+                        )
                     })?;
             }
         }
@@ -184,7 +189,9 @@ impl H2Client {
                     .send_headers(stream_id, &normalized_trailers, true)
                     .await
                     .map_err(|e| {
-                        ProtocolError::H2StreamError(format!("Failed to send trailers: {}", e))
+                        ProtocolError::H2StreamError(
+                            H2StreamErrorKind::ProtocolViolation(format!("Failed to send trailers: {}", e))
+                        )
                     })?;
             }
         }
@@ -278,8 +285,9 @@ impl H2Client {
                     }
                 }
                 FrameType::H2(FrameTypeH2::RstStream) => {
+                    // This will now return a proper H2StreamError
                     connection.handle_frame(&frame).await?;
-                    return Err(ProtocolError::RequestFailed("Stream was reset".to_string()));
+                    unreachable!("handle_rst_stream_frame should return an error")
                 }
                 _ => {
                     connection.handle_frame(&frame).await?;

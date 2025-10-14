@@ -94,7 +94,7 @@ impl Frame {
 
         let (encoded_headers, _) = Encoder::new()
             .encode_all(StreamId::new(0), header_tuples)
-            .map_err(|e| ProtocolError::InvalidResponse(format!("QPACK encode error: {:?}", e)))?
+            .map_err(|e| ProtocolError::H3QpackError(format!("QPACK encode error: {:?}", e)))?
             .into();
 
         Ok(Bytes::from(encoded_headers))
@@ -103,7 +103,7 @@ impl Frame {
     pub fn decode_headers_qpack(payload: &[u8]) -> Result<Vec<Header>, ProtocolError> {
         let decoded_result = Decoder::new(0, 0)
             .decode(StreamId::new(0), payload.to_vec())
-            .map_err(|e| ProtocolError::InvalidResponse(format!("QPACK decode error: {:?}", e)))?;
+            .map_err(|e| ProtocolError::H3QpackError(format!("QPACK decode error: {:?}", e)))?;
 
         let decoded_headers = decoded_result
             .take()

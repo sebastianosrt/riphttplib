@@ -191,18 +191,17 @@ impl Frame {
                 let headers = header_list
                     .into_iter()
                     .map(|(name, value)| {
-                        // TODO: fallback to other encoding
-                        let name_str = String::from_utf8(name).map_err(|_| {
-                            ProtocolError::InvalidResponse(
-                                "Invalid header name encoding".to_string(),
+                        let name_str = String::from_utf8(name).map_err(|e| {
+                            ProtocolError::HeaderEncodingError(
+                                format!("Invalid UTF-8 in header name: {}", e)
                             )
                         })?;
                         let value_str = if value.is_empty() {
                             None
                         } else {
-                            Some(String::from_utf8(value).map_err(|_| {
-                                ProtocolError::InvalidResponse(
-                                    "Invalid header value encoding".to_string(),
+                            Some(String::from_utf8(value).map_err(|e| {
+                                ProtocolError::HeaderEncodingError(
+                                    format!("Invalid UTF-8 in header value: {}", e)
                                 )
                             })?)
                         };
@@ -214,7 +213,7 @@ impl Frame {
                     .collect::<Result<Vec<_>, ProtocolError>>()?;
                 Ok(headers)
             }
-            Err(e) => Err(ProtocolError::InvalidResponse(format!(
+            Err(e) => Err(ProtocolError::H2CompressionError(format!(
                 "HPACK decode error: {:?}",
                 e
             ))),
@@ -274,8 +273,9 @@ impl Frame {
         let frame_type_u8 = self.get_frame_type_u8();
 
         if self.payload.len() > MAX_FRAME_SIZE_UPPER_BOUND as usize {
-            return Err(ProtocolError::RequestFailed(
-                "Frame payload too large".to_string(),
+            return Err(ProtocolError::H2FrameSizeError(
+                format!("Frame payload size {} exceeds maximum {}",
+                    self.payload.len(), MAX_FRAME_SIZE_UPPER_BOUND)
             ));
         }
 

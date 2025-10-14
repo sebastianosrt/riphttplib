@@ -1,6 +1,7 @@
 use crate::h3::connection::H3Connection;
 use crate::types::{
     FrameType, FrameTypeH3, Header, Protocol, ProtocolError, Request, Response, Target,
+    H3StreamErrorKind,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -162,7 +163,9 @@ impl H3Client {
         send_stream
             .write_all(&serialized_headers)
             .await
-            .map_err(|e| ProtocolError::H3StreamError(format!("Failed to send headers: {}", e)))?;
+            .map_err(|e| ProtocolError::H3StreamError(
+                H3StreamErrorKind::ProtocolViolation(format!("Failed to send headers: {}", e))
+            ))?;
 
         if let Some(body) = request.body.as_ref() {
             if !body.is_empty() {
@@ -171,7 +174,9 @@ impl H3Client {
                     ProtocolError::H3MessageError(format!("Failed to serialize data: {}", e))
                 })?;
                 send_stream.write_all(&serialized_data).await.map_err(|e| {
-                    ProtocolError::H3StreamError(format!("Failed to send data: {}", e))
+                    ProtocolError::H3StreamError(
+                        H3StreamErrorKind::ProtocolViolation(format!("Failed to send data: {}", e))
+                    )
                 })?;
             }
         }
@@ -194,14 +199,18 @@ impl H3Client {
                     .write_all(&serialized_trailers)
                     .await
                     .map_err(|e| {
-                        ProtocolError::H3StreamError(format!("Failed to send trailers: {}", e))
+                        ProtocolError::H3StreamError(
+                            H3StreamErrorKind::ProtocolViolation(format!("Failed to send trailers: {}", e))
+                        )
                     })?;
             }
         }
 
         send_stream
             .finish()
-            .map_err(|e| ProtocolError::H3StreamError(format!("Failed to finish stream: {}", e)))?;
+            .map_err(|e| ProtocolError::H3StreamError(
+                H3StreamErrorKind::ProtocolViolation(format!("Failed to finish stream: {}", e))
+            ))?;
 
         Ok(stream_id)
     }
@@ -231,7 +240,15 @@ impl H3Client {
         let protocol_version = "HTTP/3.0".to_string();
 
         loop {
-            let frame = connection.read_request_frame(stream_id).await?;
+            let frame_opt = connection.read_request_frame(stream_id).await?;
+
+            let frame = match frame_opt {
+                Some(frame) => frame,
+                None => {
+                    // Stream completed normally
+                    break;
+                }
+            };
 
             match &frame.frame_type {
                 FrameType::H3(FrameTypeH3::Headers) => {
@@ -269,11 +286,6 @@ impl H3Client {
                 _ => {
                     connection.handle_frame(&frame).await?;
                 }
-            }
-
-            // break condition: rely on read_request_frame to return errors/EOF when stream finishes
-            if headers_received && frame.payload.is_empty() {
-                break;
             }
         }
 

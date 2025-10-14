@@ -1,6 +1,6 @@
 use crate::h2::framing::FRAME_HEADER_SIZE;
 use crate::stream::{create_h2_tls_stream, TransportStream};
-use crate::types::{Frame, FrameType, FrameTypeH2, Header, ProtocolError, Target};
+use crate::types::{Frame, FrameType, FrameTypeH2, Header, ProtocolError, Target, H2ErrorCode, H2StreamErrorKind, H2ConnectionErrorKind};
 use bytes::Bytes;
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -509,10 +509,27 @@ impl H2Connection {
     }
 
     async fn handle_rst_stream_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
+        if frame.payload.len() != 4 {
+            return Err(ProtocolError::H2ProtocolError(
+                "RST_STREAM frame must have 4-byte payload".to_string()
+            ));
+        }
+
+        let error_code = u32::from_be_bytes([
+            frame.payload[0],
+            frame.payload[1],
+            frame.payload[2],
+            frame.payload[3],
+        ]);
+
         if let Some(stream) = self.streams.get_mut(&frame.stream_id) {
             stream.state = StreamState::Closed;
         }
-        Ok(())
+
+        let h2_error = H2ErrorCode::from(error_code);
+        Err(ProtocolError::H2StreamError(
+            H2StreamErrorKind::Reset(h2_error)
+        ))
     }
 
     async fn handle_ping_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {
@@ -541,17 +558,26 @@ impl H2Connection {
             frame.payload[3],
         ]) & 0x7FFFFFFF;
 
-        let _error_code = u32::from_be_bytes([
+        let error_code = u32::from_be_bytes([
             frame.payload[4],
             frame.payload[5],
             frame.payload[6],
             frame.payload[7],
         ]);
 
+        let debug_data = if frame.payload.len() > 8 {
+            String::from_utf8_lossy(&frame.payload[8..]).to_string()
+        } else {
+            String::new()
+        };
+
         self.last_stream_id = last_stream_id;
         self.state = ConnectionState::Closed;
 
-        Ok(())
+        let h2_error = H2ErrorCode::from(error_code);
+        Err(ProtocolError::H2ConnectionError(
+            H2ConnectionErrorKind::GoAway(h2_error, debug_data)
+        ))
     }
 
     pub async fn send_frame(&mut self, frame: &Frame) -> Result<(), ProtocolError> {

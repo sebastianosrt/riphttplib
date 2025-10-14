@@ -356,7 +356,7 @@ impl H3Connection {
         }
     }
 
-    pub async fn read_request_frame(&mut self, stream_id: u32) -> Result<Frame, ProtocolError> {
+    pub async fn read_request_frame(&mut self, stream_id: u32) -> Result<Option<Frame>, ProtocolError> {
         let stream_info = self.streams.get_mut(&stream_id).ok_or_else(|| {
             ProtocolError::RequestFailed(format!("Unknown request stream {}", stream_id))
         })?;
@@ -371,7 +371,7 @@ impl H3Connection {
             if let Some((frame, consumed)) = Self::try_parse_h3_frame(&*buf)? {
                 // advance buffer by consumed (drain)
                 let _ = buf.split_to(consumed);
-                return Ok(frame);
+                return Ok(Some(frame));
             }
 
             // Need more data
@@ -384,20 +384,16 @@ impl H3Connection {
 
             match n_opt {
                 Some(0) => {
-                    // EOF
-                    return Err(ProtocolError::InvalidResponse(
-                        "Request stream closed".to_string(),
-                    ));
+                    // EOF - normal stream completion
+                    return Ok(None);
                 }
                 Some(n) => {
                     buf.extend_from_slice(&local_chunk[..n]);
                     continue;
                 }
                 None => {
-                    // FIN with no data
-                    return Err(ProtocolError::InvalidResponse(
-                        "Request stream closed".to_string(),
-                    ));
+                    // FIN with no data - normal stream completion
+                    return Ok(None);
                 }
             }
         }
