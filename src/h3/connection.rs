@@ -5,8 +5,9 @@ use crate::h3::framing::{
 use crate::h3::qpack::{QpackDecodeStatus, SharedQpackState};
 use crate::stream::NoCertificateVerification;
 use crate::types::{
-    FrameH3, FrameType, FrameTypeH3, H3StreamErrorKind, Header, ProtocolError, Target,
+    FrameH3, FrameSink, FrameType, FrameTypeH3, H3StreamErrorKind, Header, ProtocolError, Target,
 };
+use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use quinn::{ClientConfig as QuinnClientConfig, Connection, Endpoint, RecvStream, SendStream};
 use std::collections::HashMap;
@@ -186,7 +187,7 @@ impl H3Connection {
         }
 
         // 4. Send initial SETTINGS frame
-        let settings_frame = FrameH3::settings(&[
+        FrameH3::settings(&[
             (
                 SETTINGS_QPACK_MAX_TABLE_CAPACITY,
                 self.settings[&SETTINGS_QPACK_MAX_TABLE_CAPACITY],
@@ -199,9 +200,9 @@ impl H3Connection {
                 SETTINGS_QPACK_BLOCKED_STREAMS,
                 self.settings[&SETTINGS_QPACK_BLOCKED_STREAMS],
             ),
-        ]);
-
-        self.send_control_frame(&settings_frame).await?;
+        ])
+        .send(self)
+        .await?;
 
         // 5. Accept peer-initiated control stream (unidirectional) and optionally QPACK streams
         // Block until we get a control stream from the peer
@@ -718,8 +719,7 @@ impl H3Connection {
     }
 
     pub async fn send_goaway(&mut self, stream_id: u64) -> Result<(), ProtocolError> {
-        let goaway_frame = FrameH3::goaway(0, stream_id);
-        self.send_control_frame(&goaway_frame).await?;
+        FrameH3::goaway(stream_id).send(self).await?;
         self.state = ConnectionState::Closed;
         Ok(())
     }
@@ -791,6 +791,33 @@ impl H3Connection {
                 Some((value, 8))
             }
             _ => None,
+        }
+    }
+}
+
+#[async_trait(?Send)]
+impl FrameSink<FrameH3> for H3Connection {
+    async fn write_frame(&mut self, frame: FrameH3) -> Result<(), ProtocolError> {
+        match &frame.frame_type {
+            FrameType::H3(inner) => match inner {
+                FrameTypeH3::Settings
+                | FrameTypeH3::CancelPush
+                | FrameTypeH3::GoAway
+                | FrameTypeH3::MaxPushId => {
+                    if frame.stream_id != 0 {
+                        return Err(ProtocolError::H3MessageError(
+                            "Control frames must target stream 0".to_string(),
+                        ));
+                    }
+                    self.send_control_frame(&frame).await
+                }
+                _ => Err(ProtocolError::H3MessageError(
+                    "Use stream-bound APIs to send request frames".to_string(),
+                )),
+            },
+            FrameType::H2(_) => Err(ProtocolError::H3MessageError(
+                "Attempted to send HTTP/2 frame via an HTTP/3 connection".to_string(),
+            )),
         }
     }
 }

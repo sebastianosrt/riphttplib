@@ -478,3 +478,8 @@ pub struct FrameH3 {
     pub stream_id: u32,
     pub payload: Bytes,
 }
+
+#[async_trait(?Send)]
+pub trait FrameSink<F> {
+    async fn write_frame(&mut self, frame: F) -> Result<(), ProtocolError>;
+}

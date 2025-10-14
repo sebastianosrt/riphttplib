@@ -1,4 +1,4 @@
-use crate::types::{FrameH2, FrameType, FrameTypeH2, Header, ProtocolError};
+use crate::types::{FrameH2, FrameSink, FrameType, FrameTypeH2, Header, ProtocolError};
 use bytes::{BufMut, Bytes, BytesMut};
 use hpack::{Decoder, Encoder};
 
@@ -165,6 +165,16 @@ impl FrameH2 {
             stream_id,
             payload.freeze(),
         ))
+    }
+
+    pub fn send<'a, S>(
+        self,
+        sink: &'a mut S,
+    ) -> impl std::future::Future<Output = Result<(), ProtocolError>> + 'a
+    where
+        S: FrameSink<FrameH2> + 'a,
+    {
+        async move { sink.write_frame(self).await }
     }
 
     fn encode_headers_hpack(headers: &[Header]) -> Result<Bytes, ProtocolError> {

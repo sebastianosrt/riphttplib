@@ -1,4 +1,4 @@
-use crate::types::{FrameH3, FrameType, FrameTypeH3, ProtocolError};
+use crate::types::{FrameH3, FrameSink, FrameType, FrameTypeH3, ProtocolError};
 use bytes::{BufMut, Bytes, BytesMut};
 
 // HTTP/3 Frame Types (RFC 9114 Section 7.2)
@@ -37,22 +37,32 @@ impl FrameH3 {
         Self::new(FrameTypeH3::Settings, 0, payload.freeze())
     }
 
-    pub fn goaway(stream_id: u32, id: u64) -> Self {
+    pub fn goaway(id: u64) -> Self {
         let mut payload = BytesMut::new();
         Self::encode_varint(&mut payload, id);
-        Self::new(FrameTypeH3::GoAway, stream_id, payload.freeze())
+        Self::new(FrameTypeH3::GoAway, 0, payload.freeze())
     }
 
-    pub fn max_push_id(stream_id: u32, push_id: u64) -> Self {
+    pub fn max_push_id(push_id: u64) -> Self {
         let mut payload = BytesMut::new();
         Self::encode_varint(&mut payload, push_id);
-        Self::new(FrameTypeH3::MaxPushId, stream_id, payload.freeze())
+        Self::new(FrameTypeH3::MaxPushId, 0, payload.freeze())
     }
 
-    pub fn cancel_push(stream_id: u32, push_id: u64) -> Self {
+    pub fn cancel_push(push_id: u64) -> Self {
         let mut payload = BytesMut::new();
         Self::encode_varint(&mut payload, push_id);
-        Self::new(FrameTypeH3::CancelPush, stream_id, payload.freeze())
+        Self::new(FrameTypeH3::CancelPush, 0, payload.freeze())
+    }
+
+    pub fn send<'a, S>(
+        self,
+        sink: &'a mut S,
+    ) -> impl std::future::Future<Output = Result<(), ProtocolError>> + 'a
+    where
+        S: FrameSink<FrameH3> + 'a,
+    {
+        async move { sink.write_frame(self).await }
     }
 
     pub fn get_frame_type_u64(&self) -> u64 {

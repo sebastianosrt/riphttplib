@@ -1,9 +1,10 @@
 use crate::h2::framing::FRAME_HEADER_SIZE;
 use crate::stream::{create_h2_tls_stream, TransportStream};
 use crate::types::{
-    FrameH2, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode, H2StreamErrorKind, Header,
-    ProtocolError, Target,
+    FrameH2, FrameSink, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode,
+    H2StreamErrorKind, Header, ProtocolError, Target,
 };
+use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -133,7 +134,7 @@ impl H2Connection {
         self.write_to_stream(CONNECTION_PREFACE).await?;
 
         // 2. Send initial SETTINGS frame
-        let settings_frame = FrameH2::settings(&[
+        FrameH2::settings(&[
             (
                 SETTINGS_HEADER_TABLE_SIZE,
                 self.settings[&SETTINGS_HEADER_TABLE_SIZE],
@@ -155,9 +156,9 @@ impl H2Connection {
                 SETTINGS_MAX_HEADER_LIST_SIZE,
                 self.settings[&SETTINGS_MAX_HEADER_LIST_SIZE],
             ),
-        ]);
-
-        self.send_frame(&settings_frame).await?;
+        ])
+        .send(self)
+        .await?;
 
         // 3. Connection is now open and ready for frames
         // Remote SETTINGS will be handled asynchronously in handle_frame()
@@ -188,8 +189,7 @@ impl H2Connection {
             }
 
             // Send SETTINGS ACK response
-            let settings_ack = FrameH2::settings_ack();
-            self.send_frame(&settings_ack).await?;
+            FrameH2::settings_ack().send(self).await?;
         }
         Ok(())
     }
@@ -286,9 +286,9 @@ impl H2Connection {
         end_stream: bool,
     ) -> Result<(), ProtocolError> {
         let end_headers = true; // TODO add end_headers flag param, check that headers fit in one frame and if not send continuation
-        let headers_frame = FrameH2::headers(stream_id, headers, end_stream, end_headers)?;
-
-        self.send_frame(&headers_frame).await?;
+        FrameH2::headers(stream_id, headers, end_stream, end_headers)?
+            .send(self)
+            .await?;
 
         if let Some(stream) = self.streams.get_mut(&stream_id) {
             stream.headers_received = true;
@@ -326,8 +326,9 @@ impl H2Connection {
         }
         self.connection_window_size -= data.len() as i32;
 
-        let data_frame = FrameH2::data(stream_id, Bytes::copy_from_slice(data), end_stream);
-        self.send_frame(&data_frame).await?;
+        FrameH2::data(stream_id, Bytes::copy_from_slice(data), end_stream)
+            .send(self)
+            .await?;
 
         if end_stream {
             if let Some(stream) = self.streams.get_mut(&stream_id) {
@@ -348,8 +349,9 @@ impl H2Connection {
         stream_id: u32,
         increment: u32,
     ) -> Result<(), ProtocolError> {
-        let window_update_frame = FrameH2::window_update(stream_id, increment)?;
-        self.send_frame(&window_update_frame).await?;
+        FrameH2::window_update(stream_id, increment)?
+            .send(self)
+            .await?;
 
         if stream_id == 0 {
             // Connection-level window update
@@ -363,8 +365,7 @@ impl H2Connection {
     }
 
     pub async fn send_rst(&mut self, stream_id: u32, error_code: u32) -> Result<(), ProtocolError> {
-        let rst_frame = FrameH2::rst(stream_id, error_code);
-        self.send_frame(&rst_frame).await?;
+        FrameH2::rst(stream_id, error_code).send(self).await?;
 
         if let Some(stream) = self.streams.get_mut(&stream_id) {
             stream.state = StreamState::Closed;
@@ -374,13 +375,11 @@ impl H2Connection {
     }
 
     pub async fn send_ping(&mut self, data: [u8; 8]) -> Result<(), ProtocolError> {
-        let ping_frame = FrameH2::ping(data);
-        self.send_frame(&ping_frame).await
+        FrameH2::ping(data).send(self).await
     }
 
     pub async fn send_ping_ack(&mut self, data: [u8; 8]) -> Result<(), ProtocolError> {
-        let ping_ack_frame = FrameH2::ping_ack(data);
-        self.send_frame(&ping_ack_frame).await
+        FrameH2::ping_ack(data).send(self).await
     }
 
     pub async fn send_goaway(
@@ -389,8 +388,9 @@ impl H2Connection {
         error_code: u32,
         debug_data: Option<&[u8]>,
     ) -> Result<(), ProtocolError> {
-        let goaway_frame = FrameH2::goaway(last_stream_id, error_code, debug_data);
-        self.send_frame(&goaway_frame).await?;
+        FrameH2::goaway(last_stream_id, error_code, debug_data)
+            .send(self)
+            .await?;
 
         self.state = ConnectionState::Closed;
         Ok(())
@@ -673,5 +673,12 @@ impl H2Connection {
         }
 
         stream_ids
+    }
+}
+
+#[async_trait(?Send)]
+impl FrameSink<FrameH2> for H2Connection {
+    async fn write_frame(&mut self, frame: FrameH2) -> Result<(), ProtocolError> {
+        self.send_frame(&frame).await
     }
 }
