@@ -90,34 +90,30 @@ impl H1Client {
                     .map_or(false, |v| v.to_lowercase().contains(CHUNKED_ENCODING))
         });
 
-        let use_chunked = !trailers.is_empty() || !has_content_length || has_chunked;
+        let use_chunked = has_chunked || !trailers.is_empty();
+        let body_len = request.body.as_ref().map(|b| b.len());
+        let should_generate_content_length =
+            body_len.is_some() && !use_chunked && !has_content_length;
 
-        if let Some(body) = request.body.as_ref() {
-            if use_chunked {
-                // Use chunked encoding if we have trailers or no explicit Content-Length
-                let chunked_header = format!("Transfer-Encoding: {}{}", CHUNKED_ENCODING, CRLF);
-                Self::write_to_stream(stream, chunked_header.as_bytes()).await?;
-            } else {
-                // Add Content-Length if not chunked and not already present
-                let content_length = format!("Content-Length: {}{}", body.len(), CRLF);
-                Self::write_to_stream(stream, content_length.as_bytes()).await?;
-            }
+        if should_generate_content_length {
+            let length_header = format!("Content-Length: {}{}", body_len.unwrap(), CRLF);
+            Self::write_to_stream(stream, length_header.as_bytes()).await?;
+        } else if use_chunked && !has_chunked {
+            // Add Transfer-Encoding: chunked only when we must synthesize it.
+            let chunked_header = format!("Transfer-Encoding: {}{}", CHUNKED_ENCODING, CRLF);
+            Self::write_to_stream(stream, chunked_header.as_bytes()).await?;
         }
 
         // End headers
         Self::write_to_stream(stream, CRLF.as_bytes()).await?;
 
         // Write body and trailers
-        if let Some(body) = request.body.as_ref() {
-            if use_chunked {
-                // Write as chunked
-                Self::write_chunked_body(stream, body, trailers).await?;
-            } else {
-                // Write as regular body
-                Self::write_to_stream(stream, body).await?;
-            }
-        } else if use_chunked {
-            Self::write_chunked_body(stream, &Bytes::new(), trailers).await?;
+        let empty_body = Bytes::new();
+        if use_chunked {
+            let body = request.body.as_ref().unwrap_or(&empty_body);
+            Self::write_chunked_body(stream, body, trailers.as_slice()).await?;
+        } else if let Some(body) = request.body.as_ref() {
+            Self::write_to_stream(stream, body).await?;
         }
 
         Ok(())
@@ -137,7 +133,7 @@ impl H1Client {
     async fn write_chunked_body(
         stream: &mut TransportStream,
         body: &Bytes,
-        trailers: &Vec<Header>,
+        trailers: &[Header],
     ) -> Result<(), ProtocolError> {
         if !body.is_empty() {
             // Write chunk size in hex
@@ -187,47 +183,47 @@ impl H1Client {
         reader: &mut R,
         method: &str,
     ) -> Result<Response, ProtocolError> {
-        // Read status line
-        let mut status_line = String::new();
-        reader
-            .read_line(&mut status_line)
-            .await
-            .map_err(ProtocolError::Io)?;
-
-        let (status, protocol_version) = Self::parse_status_line(&status_line)?;
-
-        // Read headers
-        let mut headers = Vec::new();
         loop {
-            let mut line = String::new();
-            reader
-                .read_line(&mut line)
+            let mut status_line = String::new();
+            let bytes = reader
+                .read_line(&mut status_line)
                 .await
                 .map_err(ProtocolError::Io)?;
 
-            if line.trim().is_empty() {
-                break;
+            if bytes == 0 {
+                return Err(ProtocolError::InvalidResponse(
+                    "Unexpected EOF while reading status line".to_string(),
+                ));
             }
 
-            if let Some(header) = crate::utils::parse_header(line.trim()) {
-                headers.push(header);
+            if status_line.trim().is_empty() {
+                // Skip empty lines between responses.
+                continue;
             }
+
+            let (status, protocol_version) = Self::parse_status_line(&status_line)?;
+            let headers = Self::read_header_block(reader).await?;
+
+            if status < 200 {
+                // Informational response; skip body (per RFC 7230 §3.3.1) and continue.
+                continue;
+            }
+
+            // Read body and trailers for the final response.
+            let (body, trailers) = Self::read_body(reader, &headers, method, status).await?;
+
+            return Ok(Response {
+                status,
+                protocol_version,
+                headers,
+                body,
+                trailers: if trailers.is_empty() {
+                    None
+                } else {
+                    Some(trailers)
+                },
+            });
         }
-
-        // Read body and trailers
-        let (body, trailers) = Self::read_body(reader, &headers, method).await?;
-
-        Ok(Response {
-            status,
-            protocol_version,
-            headers,
-            body,
-            trailers: if trailers.is_empty() {
-                None
-            } else {
-                Some(trailers)
-            },
-        })
     }
 
     pub fn parse_status_line(status_line: &str) -> Result<(u16, String), ProtocolError> {
@@ -250,8 +246,9 @@ impl H1Client {
         reader: &mut R,
         headers: &[Header],
         method: &str,
+        status: u16,
     ) -> Result<(Bytes, Vec<Header>), ProtocolError> {
-        if method.to_uppercase() == "HEAD" {
+        if !Self::response_has_body(method, status) {
             return Ok((Bytes::new(), Vec::new()));
         }
 
@@ -347,6 +344,40 @@ impl H1Client {
         }
 
         Ok((Bytes::from(body), trailers))
+    }
+
+    async fn read_header_block<R: AsyncBufRead + Unpin>(
+        reader: &mut R,
+    ) -> Result<Vec<Header>, ProtocolError> {
+        let mut headers = Vec::new();
+        loop {
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .await
+                .map_err(ProtocolError::Io)?;
+
+            if line.trim().is_empty() {
+                break;
+            }
+
+            if let Some(header) = crate::utils::parse_header(line.trim()) {
+                headers.push(header);
+            }
+        }
+        Ok(headers)
+    }
+
+    fn response_has_body(method: &str, status: u16) -> bool {
+        if method.eq_ignore_ascii_case("HEAD") {
+            return false;
+        }
+
+        if (100..200).contains(&status) {
+            return false;
+        }
+
+        !matches!(status, 204 | 205 | 304)
     }
 }
 
