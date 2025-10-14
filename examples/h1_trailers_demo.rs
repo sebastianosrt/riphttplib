@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use riphttplib::h1::H1Client;
-use riphttplib::types::{Header, Protocol};
+use riphttplib::types::{Header, Request};
 use riphttplib::utils::parse_target;
 
 #[tokio::main]
@@ -11,15 +11,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = H1Client::new();
 
     // Setup target for POST request
-    let target = parse_target("http://httpbin.org/post");
+    let target = parse_target("http://httpbin.org/post")?;
 
     // Print target information
     println!("\nTarget Information:");
-    println!("   Host: {}", target.host);
-    println!("   Port: {}", target.port);
-    println!("   Scheme: {}", target.scheme);
-    println!("   Path: {}", target.path);
-    println!("   URL: {}", target.url);
+    println!("   Host: {}", target.host().unwrap_or(""));
+    println!("   Port: {}", target.port().unwrap_or_default());
+    println!("   Scheme: {}", target.scheme());
+    println!("   Path: {}", target.path());
+    println!("   URL: {}", target.as_str());
 
     // Create headers
     let headers = vec![
@@ -84,10 +84,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🔄 Sending Request...");
 
     // Send POST request with trailers
-    match client
-        .post(&target, Some(headers), Some(body), Some(trailers))
-        .await
-    {
+    let request = Request::new("POST")
+        .with_headers(headers.clone())
+        .with_body(body.clone())
+        .with_trailers(Some(trailers.clone()));
+
+    match client.send_request(&target, request).await {
         Ok(response) => {
             println!("✅ Request Successful!");
 
@@ -126,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("   Body (JSON):");
                 let pretty_json = serde_json::to_string_pretty(&json_value)?;
                 // Print first few lines of the response
-                for (i, line) in pretty_json.lines().enumerate() {
+                for line in pretty_json.lines() {
                     println!("     {}", line);
                 }
             } else {
@@ -145,13 +147,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // GET request
             println!("\n📤 GET Request:");
-            let get_target = parse_target("http://httpbin.org/get?demo=true&source=riphttplib");
-            let get_headers = vec![Header::new(
+            let get_target = parse_target("http://httpbin.org/get?demo=true&source=riphttplib")?;
+            let get_request = Request::new("GET").with_headers(vec![Header::new(
                 "Accept".to_string(),
                 "application/json".to_string(),
-            )];
+            )]);
 
-            match client.get(&get_target, Some(get_headers), None, None).await {
+            match client.send_request(&get_target, get_request).await {
                 Ok(get_response) => {
                     println!(
                         "   ✅ GET Status: {} {}",
@@ -166,10 +168,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // HEAD request
             println!("\n📤 HEAD Request:");
-            match client
-                .send(&get_target, Some("HEAD".to_string()), None, None, None)
-                .await
-            {
+            let head_request = Request::new("HEAD");
+            match client.send_request(&get_target, head_request).await {
                 Ok(head_response) => {
                     println!(
                         "   ✅ HEAD Status: {} {}",
@@ -193,9 +193,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Provide helpful debugging information
             println!("\n🔍 Debugging Information:");
             println!("   - Check network connectivity");
-            println!("   - Verify target host is reachable: {}", target.host);
-            println!("   - Ensure port {} is accessible", target.port);
-            if target.scheme == "https" {
+            println!(
+                "   - Verify target host is reachable: {}",
+                target.host().unwrap_or("")
+            );
+            println!(
+                "   - Ensure port {} is accessible",
+                target.port().unwrap_or_default()
+            );
+            if target.scheme() == "https" {
                 println!("   - Verify TLS/SSL configuration");
             }
         }

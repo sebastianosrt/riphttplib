@@ -1,15 +1,17 @@
-use quinn::{ClientConfig as QuinnClientConfig, Connection, Endpoint};
 use quinn::crypto::rustls::QuicClientConfig;
+use quinn::{ClientConfig as QuinnClientConfig, Connection, Endpoint};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, RootCertStore};
 use rustls::DigitallySignedStruct;
+use rustls::{ClientConfig, RootCertStore};
 use std::io;
 use std::sync::Arc;
 use tokio::net::lookup_host;
 use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
 use webpki_roots::TLS_SERVER_ROOTS;
+
+// pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Insecure certificate verifier that accepts all certificates
 #[derive(Debug)]
@@ -64,18 +66,17 @@ impl ServerCertVerifier for NoCertificateVerification {
     }
 }
 
-pub enum StreamType {
+pub enum TransportStream {
     Tcp(TcpStream),
     Tls(TlsStream<TcpStream>),
-    Quic(Connection),
 }
 
-pub async fn create_tcp_stream(host: &str, port: u16) -> io::Result<StreamType> {
+pub async fn create_tcp_stream(host: &str, port: u16) -> io::Result<TransportStream> {
     let stream = TcpStream::connect((host, port)).await?;
-    Ok(StreamType::Tcp(stream))
+    Ok(TransportStream::Tcp(stream))
 }
 
-pub async fn create_tls_stream(host: &str, port: u16, server_name: &str) -> io::Result<StreamType> {
+pub async fn create_tls_stream(host: &str, port: u16, server_name: &str) -> io::Result<TransportStream> {
     let tcp_stream = TcpStream::connect((host, port)).await?;
 
     // Create TLS configuration that skips certificate verification
@@ -92,14 +93,14 @@ pub async fn create_tls_stream(host: &str, port: u16, server_name: &str) -> io::
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid server name"))?;
 
     let tls_stream = connector.connect(server_name, tcp_stream).await?;
-    Ok(StreamType::Tls(tls_stream))
+    Ok(TransportStream::Tls(tls_stream))
 }
 
 pub async fn create_quic_connection(
     host: &str,
     port: u16,
     server_name: &str,
-) -> io::Result<StreamType> {
+) -> io::Result<Connection> {
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())?;
 
     let root_store = RootCertStore {
@@ -133,18 +134,16 @@ pub async fn create_quic_connection(
     let connecting = endpoint
         .connect(addr, server_name)
         .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-    let connection = connecting
+    connecting
         .await
-        .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-
-    Ok(StreamType::Quic(connection))
+        .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))
 }
 
 pub async fn create_h2_tls_stream(
     host: &str,
     port: u16,
     server_name: &str,
-) -> io::Result<StreamType> {
+) -> io::Result<TransportStream> {
     let tcp_stream = TcpStream::connect((host, port)).await?;
 
     // Create TLS configuration that skips certificate verification
@@ -161,15 +160,14 @@ pub async fn create_h2_tls_stream(
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid server name"))?;
 
     let tls_stream = connector.connect(server_name, tcp_stream).await?;
-    Ok(StreamType::Tls(tls_stream))
+    Ok(TransportStream::Tls(tls_stream))
 }
 
-pub async fn create_stream(scheme: &str, host: &str, port: u16) -> io::Result<StreamType> {
+pub async fn create_stream(scheme: &str, host: &str, port: u16) -> io::Result<TransportStream> {
     match scheme {
         "http" => create_tcp_stream(host, port).await,
         "https" => create_tls_stream(host, port, host).await,
         "h2" => create_h2_tls_stream(host, port, host).await,
-        "h3" | "http3" => create_quic_connection(host, port, host).await,
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("Unsupported scheme: {}", scheme),

@@ -1,5 +1,5 @@
 use crate::h2::framing::FRAME_HEADER_SIZE;
-use crate::stream::{StreamType, create_h2_tls_stream};
+use crate::stream::{create_h2_tls_stream, TransportStream};
 use crate::types::{Frame, FrameType, FrameTypeH2, Header, ProtocolError, Target};
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -65,7 +65,7 @@ impl StreamInfo {
 }
 
 pub struct H2Connection {
-    pub stream: StreamType,
+    pub stream: TransportStream,
     pub state: ConnectionState,
     pub settings: HashMap<u16, u32>,
     pub remote_settings: HashMap<u16, u32>,
@@ -77,22 +77,29 @@ pub struct H2Connection {
 
 impl H2Connection {
     pub async fn connect(target: &Target) -> Result<Self, ProtocolError> {
-        let stream = if target.scheme == "https" {
-            create_h2_tls_stream(&target.host, target.port, &target.host)
-                .await
-                .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?
-        } else {
+        if target.scheme() != "https" && target.scheme() != "h2" {
             return Err(ProtocolError::RequestFailed(
                 "HTTP/2 requires HTTPS".to_string(),
             ));
-        };
+        }
+
+        let host = target
+            .host()
+            .ok_or_else(|| ProtocolError::InvalidTarget("Target missing host".to_string()))?;
+        let port = target
+            .port()
+            .ok_or_else(|| ProtocolError::InvalidTarget("Target missing port".to_string()))?;
+
+        let stream = create_h2_tls_stream(host, port, host)
+            .await
+            .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?;
 
         let mut connection = Self::new(stream);
         connection.perform_handshake().await?;
         Ok(connection)
     }
 
-    pub fn new(stream: StreamType) -> Self {
+    pub fn new(stream: TransportStream) -> Self {
         let mut settings = HashMap::new();
         settings.insert(SETTINGS_HEADER_TABLE_SIZE, DEFAULT_HEADER_TABLE_SIZE);
         settings.insert(SETTINGS_ENABLE_PUSH, 0);
@@ -577,32 +584,24 @@ impl H2Connection {
 
     async fn write_to_stream(&mut self, data: &[u8]) -> Result<(), ProtocolError> {
         match &mut self.stream {
-            StreamType::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io)?,
-            StreamType::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io)?,
-            StreamType::Quic(_) => {
-                return Err(ProtocolError::RequestFailed(
-                    "QUIC not supported for HTTP/2".to_string(),
-                ));
-            }
+            TransportStream::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io)?,
+            TransportStream::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io)?,
         }
         Ok(())
     }
 
     async fn read_from_stream(&mut self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
         match &mut self.stream {
-            StreamType::Tcp(tcp) => tcp
+            TransportStream::Tcp(tcp) => tcp
                 .read_exact(buffer)
                 .await
                 .map_err(ProtocolError::Io)
                 .map(|_| buffer.len()),
-            StreamType::Tls(tls) => tls
+            TransportStream::Tls(tls) => tls
                 .read_exact(buffer)
                 .await
                 .map_err(ProtocolError::Io)
                 .map(|_| buffer.len()),
-            StreamType::Quic(_) => Err(ProtocolError::RequestFailed(
-                "QUIC not supported for HTTP/2".to_string(),
-            )),
         }
     }
 

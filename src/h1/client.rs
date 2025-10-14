@@ -1,5 +1,5 @@
-use crate::stream::{StreamType, create_stream};
-use crate::types::{Header, Protocol, ProtocolError, Response, Target};
+use crate::stream::{create_stream, TransportStream};
+use crate::types::{Header, Protocol, ProtocolError, Request, Response, Target};
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -21,33 +21,54 @@ impl H1Client {
         H1Client
     }
 
-    async fn write_request(
-        stream: &mut StreamType,
-        method: &str,
+    pub async fn send_request(
+        &self,
         target: &Target,
-        headers: Option<&Vec<Header>>,
-        body: Option<&Bytes>,
-        trailers: Option<&Vec<Header>>,
-    ) -> Result<(), ProtocolError> {
-        let path = &target.path;
+        request: Request,
+    ) -> Result<Response, ProtocolError> {
+        let host = target
+            .host()
+            .ok_or_else(|| ProtocolError::InvalidTarget("Target missing host".to_string()))?;
+        let port = target
+            .port()
+            .ok_or_else(|| ProtocolError::InvalidTarget("Target missing port".to_string()))?;
 
-        let request_line = format!("{} {} {}{}", method, path, HTTP_VERSION, CRLF);
+        let mut stream = create_stream(target.scheme(), host, port)
+            .await
+            .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?;
+
+        Self::write_request(&mut stream, target, &request).await?;
+        Self::read_response(&mut stream, &request.method).await
+    }
+
+    async fn write_request(
+        stream: &mut TransportStream,
+        target: &Target,
+        request: &Request,
+    ) -> Result<(), ProtocolError> {
+        let path = target.path();
+
+        let request_line = format!("{} {} {}{}", request.method, path, HTTP_VERSION, CRLF);
         Self::write_to_stream(stream, request_line.as_bytes()).await?;
 
-        let empty_headers = Vec::new();
         let empty_trailers = Vec::new();
-        let headers = headers.unwrap_or(&empty_headers);
-        let trailers = trailers.unwrap_or(&empty_trailers);
+        let headers = &request.headers;
+        let trailers = request.trailers.as_ref().unwrap_or(&empty_trailers);
 
-        let has_host = headers.iter().any(|h| h.name.to_lowercase() == HOST_HEADER);
+        let has_host = headers
+            .iter()
+            .any(|h| h.name.eq_ignore_ascii_case(HOST_HEADER));
         if !has_host {
-            let host_header = format!("Host: {}{}", target.host, CRLF);
+            let authority = target
+                .authority()
+                .unwrap_or_else(|| target.host().unwrap_or_default().to_string());
+            let host_header = format!("Host: {}{}", authority, CRLF);
             Self::write_to_stream(stream, host_header.as_bytes()).await?;
         }
 
         let has_user_agent = headers
             .iter()
-            .any(|h| h.name.to_lowercase() == USER_AGENT_HEADER);
+            .any(|h| h.name.eq_ignore_ascii_case(USER_AGENT_HEADER));
         if !has_user_agent {
             let user_agent_header = format!("User-Agent: {}{}", USER_AGENT, CRLF);
             Self::write_to_stream(stream, user_agent_header.as_bytes()).await?;
@@ -60,9 +81,9 @@ impl H1Client {
 
         let has_content_length = headers
             .iter()
-            .any(|h| h.name.to_lowercase() == CONTENT_LENGTH_HEADER);
+            .any(|h| h.name.eq_ignore_ascii_case(CONTENT_LENGTH_HEADER));
         let has_chunked = headers.iter().any(|h| {
-            h.name.to_lowercase() == TRANSFER_ENCODING_HEADER
+            h.name.eq_ignore_ascii_case(TRANSFER_ENCODING_HEADER)
                 && h.value
                     .as_ref()
                     .map_or(false, |v| v.to_lowercase().contains(CHUNKED_ENCODING))
@@ -70,7 +91,7 @@ impl H1Client {
 
         let use_chunked = !trailers.is_empty() || !has_content_length || has_chunked;
 
-        if let Some(body) = body {
+        if let Some(body) = request.body.as_ref() {
             if use_chunked {
                 // Use chunked encoding if we have trailers or no explicit Content-Length
                 let chunked_header = format!("Transfer-Encoding: {}{}", CHUNKED_ENCODING, CRLF);
@@ -86,7 +107,7 @@ impl H1Client {
         Self::write_to_stream(stream, CRLF.as_bytes()).await?;
 
         // Write body
-        if let Some(body) = body {
+        if let Some(body) = request.body.as_ref() {
             if use_chunked {
                 // Write as chunked
                 Self::write_chunked_body(stream, body, trailers).await?;
@@ -101,21 +122,16 @@ impl H1Client {
         Ok(())
     }
 
-    async fn write_to_stream(stream: &mut StreamType, data: &[u8]) -> Result<(), ProtocolError> {
+    async fn write_to_stream(stream: &mut TransportStream, data: &[u8]) -> Result<(), ProtocolError> {
         match stream {
-            StreamType::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io)?,
-            StreamType::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io)?,
-            StreamType::Quic(_) => {
-                return Err(ProtocolError::RequestFailed(
-                    "QUIC not supported for HTTP/1.1".to_string(),
-                ));
-            }
+            TransportStream::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io)?,
+            TransportStream::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io)?,
         }
         Ok(())
     }
 
     async fn write_chunked_body(
-        stream: &mut StreamType,
+        stream: &mut TransportStream,
         body: &Bytes,
         trailers: &Vec<Header>,
     ) -> Result<(), ProtocolError> {
@@ -148,21 +164,18 @@ impl H1Client {
     }
 
     async fn read_response(
-        stream: &mut StreamType,
+        stream: &mut TransportStream,
         method: &str,
     ) -> Result<Response, ProtocolError> {
         match stream {
-            StreamType::Tcp(tcp) => {
+            TransportStream::Tcp(tcp) => {
                 let mut reader = BufReader::new(tcp);
                 Self::read_response_from_reader(&mut reader, method).await
             }
-            StreamType::Tls(tls) => {
+            TransportStream::Tls(tls) => {
                 let mut reader = BufReader::new(tls);
                 Self::read_response_from_reader(&mut reader, method).await
             }
-            StreamType::Quic(_) => Err(ProtocolError::RequestFailed(
-                "QUIC not supported for HTTP/1.1".to_string(),
-            )),
         }
     }
 
@@ -336,158 +349,7 @@ impl H1Client {
 
 #[async_trait]
 impl Protocol for H1Client {
-    async fn send(
-        &self,
-        target: &Target,
-        method: Option<String>,
-        headers: Option<Vec<Header>>,
-        body: Option<String>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        let body_bytes = body.map(Bytes::from);
-        self.send_bytes(target, method, headers, body_bytes, trailers)
-            .await
-    }
-
-    async fn get(
-        &self,
-        target: &Target,
-        headers: Option<Vec<Header>>,
-        body: Option<String>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        self.send(target, Some("GET".to_string()), headers, body, trailers)
-            .await
-    }
-
-    async fn post(
-        &self,
-        target: &Target,
-        headers: Option<Vec<Header>>,
-        body: Option<String>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        self.send(target, Some("POST".to_string()), headers, body, trailers)
-            .await
-    }
-
-    async fn send_bytes(
-        &self,
-        target: &Target,
-        method: Option<String>,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        let method = method.unwrap_or_else(|| "GET".to_string());
-
-        let mut stream = create_stream(&target.scheme, &target.host, target.port)
-            .await
-            .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?;
-
-        Self::write_request(
-            &mut stream,
-            &method,
-            target,
-            headers.as_ref(),
-            body.as_ref(),
-            trailers.as_ref(),
-        )
-        .await?;
-        Self::read_response(&mut stream, &method).await
-    }
-
-    async fn get_bytes(
-        &self,
-        target: &Target,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        self.send_bytes(target, Some("GET".to_string()), headers, body, trailers)
-            .await
-    }
-
-    async fn post_bytes(
-        &self,
-        target: &Target,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        self.send_bytes(target, Some("POST".to_string()), headers, body, trailers)
-            .await
-    }
-}
-
-impl H1Client {
-    pub async fn send_str(
-        &self,
-        target: &Target,
-        method: Option<String>,
-        headers: Option<Vec<Header>>,
-        body: Option<&str>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        let body_bytes = body.map(|s| Bytes::from(s.to_string()));
-        self.send_bytes(target, method, headers, body_bytes, trailers)
-            .await
-    }
-
-    pub async fn get_str(
-        &self,
-        target: &Target,
-        headers: Option<Vec<Header>>,
-        body: Option<&str>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        let body_bytes = body.map(|s| Bytes::from(s.to_string()));
-        self.get_bytes(target, headers, body_bytes, trailers).await
-    }
-
-    pub async fn post_str(
-        &self,
-        target: &Target,
-        headers: Option<Vec<Header>>,
-        body: Option<&str>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        let body_bytes = body.map(|s| Bytes::from(s.to_string()));
-        self.post_bytes(target, headers, body_bytes, trailers).await
-    }
-
-    pub async fn send_string(
-        &self,
-        target: &Target,
-        method: Option<String>,
-        headers: Option<Vec<Header>>,
-        body: Option<String>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        let body_bytes = body.map(Bytes::from);
-        self.send_bytes(target, method, headers, body_bytes, trailers)
-            .await
-    }
-
-    pub async fn get_string(
-        &self,
-        target: &Target,
-        headers: Option<Vec<Header>>,
-        body: Option<String>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        let body_bytes = body.map(Bytes::from);
-        self.get_bytes(target, headers, body_bytes, trailers).await
-    }
-
-    pub async fn post_string(
-        &self,
-        target: &Target,
-        headers: Option<Vec<Header>>,
-        body: Option<String>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Response, ProtocolError> {
-        let body_bytes = body.map(Bytes::from);
-        self.post_bytes(target, headers, body_bytes, trailers).await
+    async fn send(&self, target: &Target, request: Request) -> Result<Response, ProtocolError> {
+        self.send_request(target, request).await
     }
 }

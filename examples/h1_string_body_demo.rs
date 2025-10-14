@@ -1,5 +1,6 @@
+use bytes::Bytes;
 use riphttplib::h1::H1Client;
-use riphttplib::types::{Header, Protocol};
+use riphttplib::types::{Header, Request};
 use riphttplib::utils::parse_target;
 
 #[tokio::main]
@@ -7,7 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("HTTP/1.1 String Body Demo");
 
     let client = H1Client::new();
-    let target = parse_target("http://httpbin.org/post");
+    let target = parse_target("http://httpbin.org/post")?;
 
     let headers = vec![
         Header::new("Content-Type".to_string(), "text/plain".to_string()),
@@ -18,10 +19,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🔄 Testing POST with &str body...");
     let str_body = "Hello from string slice!";
 
-    match client
-        .post_str(&target, Some(headers.clone()), Some(str_body), None)
-        .await
-    {
+    let request = Request::new("POST")
+        .with_headers(headers.clone())
+        .with_body(Bytes::from(str_body.to_owned()))
+        .with_trailers(None);
+
+    match client.send_request(&target, request).await {
         Ok(response) => {
             println!("✅ &str body request successful!");
             println!("   Status: {}", response.status);
@@ -39,15 +42,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         chrono::Utc::now().to_rfc3339()
     );
 
-    match client
-        .post_string(
-            &target,
-            Some(headers.clone()),
-            Some(string_body.clone()),
-            None,
-        )
-        .await
-    {
+    let request = Request::new("POST")
+        .with_headers(headers.clone())
+        .with_body(Bytes::from(string_body.clone()))
+        .with_trailers(None);
+
+    match client.send_request(&target, request).await {
         Ok(response) => {
             println!("✅ String body request successful!");
             println!("   Status: {}", response.status);
@@ -67,12 +67,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test GET with string body (unusual but supported)
     println!("\n🔄 Testing GET with string body...");
-    let get_target = parse_target("http://httpbin.org/get");
+    let get_target = parse_target("http://httpbin.org/get")?;
 
-    match client
-        .get_str(&get_target, None, Some("GET request with body"), None)
-        .await
-    {
+    let get_request = Request::new("GET")
+        .with_optional_body(Some(Bytes::from("GET request with body".to_string())));
+    match client.send_request(&get_target, get_request).await {
         Ok(response) => {
             println!("✅ GET with string body successful!");
             println!("   Status: {}", response.status);
@@ -85,16 +84,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test send_str with custom method
     println!("\n🔄 Testing custom method with string body...");
 
-    match client
-        .send_str(
-            &target,
-            Some("PUT".to_string()),
-            Some(headers),
-            Some("PUT body content"),
-            None,
-        )
-        .await
-    {
+    let put_request = Request::new("PUT")
+        .with_headers(headers)
+        .with_body(Bytes::from("PUT body content".to_string()));
+
+    match client.send_request(&target, put_request).await {
         Ok(response) => {
             println!("✅ Custom method (PUT) with string body successful!");
             println!("   Status: {}", response.status);

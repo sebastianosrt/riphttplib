@@ -1,17 +1,25 @@
-use crate::types::{Header, Target};
-use std::collections::HashSet;
+use crate::types::{Header, ProtocolError, Target};
 use url::Url;
 
-pub fn parse_target(target: &str) -> Target {
-    let url = Url::parse(target).unwrap();
-    Target {
-        host: url.host_str().unwrap().to_string(),
-        port: url.port_or_known_default().unwrap(),
-        url: target.to_string(),
-        protocols: HashSet::new(),
-        scheme: url.scheme().to_string(),
-        path: url.path().to_string(),
+pub fn parse_target(target: &str) -> Result<Target, ProtocolError> {
+    let url = Url::parse(target)
+        .map_err(|e| ProtocolError::InvalidTarget(format!("{} ({})", target, e)))?;
+
+    if url.host_str().is_none() {
+        return Err(ProtocolError::InvalidTarget(format!(
+            "Target '{}' is missing a host",
+            target
+        )));
     }
+
+    if url.port_or_known_default().is_none() {
+        return Err(ProtocolError::InvalidTarget(format!(
+            "Target '{}' has no known port",
+            target
+        )));
+    }
+
+    Ok(Target::new(url))
 }
 
 pub fn convert_escape_sequences(input: &str) -> String {

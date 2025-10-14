@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use riphttplib::h2::H2Client;
-use riphttplib::types::{Header, Protocol};
+use riphttplib::types::{Header, Request};
 use riphttplib::utils::parse_target;
 
 #[tokio::main]
@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = H2Client::new();
     // let target = parse_target("https://httpbin.org/post");
-    let target = parse_target("https://localhost:51443");
+    let target = parse_target("https://localhost:51443")?;
 
     let headers = vec![Header::new("aaaaa".to_string(), "aaaaaaaaa".to_string())];
     let trailers = vec![Header::new("host".to_string(), "xxxxxxxx".to_string())];
@@ -22,15 +22,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test basic GET request
     println!("\n🔄 Testing HTTP/2 request...");
 
-    match client
-        .post(
-            &target,
-            Some(headers),
-            Some(Bytes::from("aaaaaaaa".to_string())),
-            Some(trailers),
-        )
-        .await
-    {
+    let request = Request::new("POST")
+        .with_headers(headers)
+        .with_body(Bytes::from("aaaaaaaa".to_string()))
+        .with_trailers(Some(trailers));
+
+    match client.send_request(&target, request).await {
         Ok(response) => {
             println!("✅ HTTP/2 GET request successful!");
             println!("   Status: {}", response.status);

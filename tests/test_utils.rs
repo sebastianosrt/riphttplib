@@ -7,14 +7,14 @@ mod tests {
     #[test]
     fn test_parse_regular_header() {
         let header = parse_header("Content-Type: application/json").unwrap();
-        assert_eq!(header.name, "Content-Type");
+        assert_eq!(header.name, "content-type");
         assert_eq!(header.value, Some("application/json".to_string()));
     }
 
     #[test]
     fn test_parse_header_with_escape_sequences() {
         let header = parse_header("X-Test: line1\\nline2\\tindented").unwrap();
-        assert_eq!(header.name, "X-Test");
+        assert_eq!(header.name, "x-test");
         assert_eq!(header.value, Some("line1\nline2\tindented".to_string()));
     }
 
@@ -28,7 +28,7 @@ mod tests {
     #[test]
     fn test_parse_valueless_header() {
         let header = parse_header("Authorization").unwrap();
-        assert_eq!(header.name, "Authorization");
+        assert_eq!(header.name, "authorization");
         assert_eq!(header.value, None);
     }
 
@@ -42,14 +42,14 @@ mod tests {
     #[test]
     fn test_parse_header_with_multiple_colons() {
         let header = parse_header("X-Time: 12:34:56").unwrap();
-        assert_eq!(header.name, "X-Time");
+        assert_eq!(header.name, "x-time");
         assert_eq!(header.value, Some("12:34:56".to_string()));
     }
 
     #[test]
     fn test_parse_header_with_backslash_escapes() {
         let header = parse_header("X-Path: C:\\\\\\\\Users\\\\\\\\test").unwrap();
-        assert_eq!(header.name, "X-Path");
+        assert_eq!(header.name, "x-path");
         assert_eq!(header.value, Some("C:\\\\Users\\\test".to_string()));
     }
 }

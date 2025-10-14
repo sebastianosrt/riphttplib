@@ -1,5 +1,5 @@
 use riphttplib::h3::H3Client;
-use riphttplib::types::Protocol;
+use riphttplib::types::Request;
 use riphttplib::utils::parse_target;
 
 #[tokio::main]
@@ -10,10 +10,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to install ring provider");
 
     let client = H3Client::new();
-    let target = parse_target("https://www.google.com/");
+    let target = parse_target("https://www.google.com/")?;
 
-    println!("\n== HTTP/3 Request to {} ==", target.url);
-    match client.get(&target, None, None, None).await {
+    println!("\n== HTTP/3 Request to {} ==", target.as_str());
+    let request = Request::new("GET");
+    match client.send_request(&target, request).await {
         Ok(response) => {
             println!("Status: {}", response.status);
             println!("\n-- Response Headers --");

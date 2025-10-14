@@ -2,7 +2,7 @@ use crate::h3::framing::{
     SETTINGS_MAX_FIELD_SECTION_SIZE, SETTINGS_QPACK_BLOCKED_STREAMS,
     SETTINGS_QPACK_MAX_TABLE_CAPACITY,
 };
-use crate::stream::{StreamType, create_quic_connection};
+use crate::stream::create_quic_connection;
 use crate::types::{Frame, FrameType, FrameTypeH3, Header, ProtocolError, Target};
 use bytes::{Bytes, BytesMut};
 use quinn::{Connection, RecvStream, SendStream};
@@ -56,16 +56,16 @@ pub struct H3Connection {
 
 impl H3Connection {
     pub async fn connect(target: &Target) -> Result<Self, ProtocolError> {
-        let connection = match create_quic_connection(&target.host, target.port, &target.host).await
-        {
-            Ok(StreamType::Quic(conn)) => conn,
-            Ok(_) => {
-                return Err(ProtocolError::RequestFailed(
-                    "Expected QUIC connection".to_string(),
-                ));
-            }
-            Err(e) => return Err(ProtocolError::ConnectionFailed(e.to_string())),
-        };
+        let host = target
+            .host()
+            .ok_or_else(|| ProtocolError::InvalidTarget("Target missing host".to_string()))?;
+        let port = target
+            .port()
+            .ok_or_else(|| ProtocolError::InvalidTarget("Target missing port".to_string()))?;
+
+        let connection = create_quic_connection(host, port, host)
+            .await
+            .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?;
 
         let mut h3_connection = Self::new(connection);
         h3_connection.perform_handshake().await?;

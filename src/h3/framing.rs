@@ -1,8 +1,8 @@
 use crate::types::{Frame, FrameType, FrameTypeH3, Header, ProtocolError};
 use bytes::{BufMut, Bytes, BytesMut};
-use ls_qpack_rs::StreamId;
 use ls_qpack_rs::decoder::Decoder;
 use ls_qpack_rs::encoder::Encoder;
+use ls_qpack_rs::StreamId;
 
 // HTTP/3 Frame Types (RFC 9114 Section 7.2)
 pub const DATA_FRAME_TYPE: u64 = 0x0;
