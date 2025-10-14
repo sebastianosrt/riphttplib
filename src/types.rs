@@ -129,7 +129,6 @@ impl Response {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct Request {
     pub method: String,
@@ -174,7 +173,7 @@ impl Request {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 pub trait Protocol {
     async fn send(&self, target: &Target, request: Request) -> Result<Response, ProtocolError>;
 }
@@ -266,16 +265,24 @@ impl std::fmt::Display for ProtocolError {
 
             // HTTP/2 specific errors
             ProtocolError::H2FrameSizeError(msg) => write!(f, "HTTP/2 frame size error: {}", msg),
-            ProtocolError::H2FlowControlError(msg) => write!(f, "HTTP/2 flow control error: {}", msg),
-            ProtocolError::H2CompressionError(msg) => write!(f, "HTTP/2 compression error: {}", msg),
+            ProtocolError::H2FlowControlError(msg) => {
+                write!(f, "HTTP/2 flow control error: {}", msg)
+            }
+            ProtocolError::H2CompressionError(msg) => {
+                write!(f, "HTTP/2 compression error: {}", msg)
+            }
             ProtocolError::H2StreamError(kind) => write!(f, "HTTP/2 stream error: {}", kind),
-            ProtocolError::H2ConnectionError(kind) => write!(f, "HTTP/2 connection error: {}", kind),
+            ProtocolError::H2ConnectionError(kind) => {
+                write!(f, "HTTP/2 connection error: {}", kind)
+            }
             ProtocolError::H2ProtocolError(msg) => write!(f, "HTTP/2 protocol error: {}", msg),
 
             // HTTP/3 specific errors
             ProtocolError::H3StreamError(kind) => write!(f, "HTTP/3 stream error: {}", kind),
             ProtocolError::H3MessageError(msg) => write!(f, "HTTP/3 message error: {}", msg),
-            ProtocolError::H3StreamCreationError(msg) => write!(f, "HTTP/3 stream creation error: {}", msg),
+            ProtocolError::H3StreamCreationError(msg) => {
+                write!(f, "HTTP/3 stream creation error: {}", msg)
+            }
             ProtocolError::H3QpackError(msg) => write!(f, "HTTP/3 QPACK error: {}", msg),
             ProtocolError::H3ConnectionError(msg) => write!(f, "HTTP/3 connection error: {}", msg),
 
@@ -315,10 +322,16 @@ impl std::fmt::Display for H2ConnectionErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             H2ConnectionErrorKind::GoAway(code, debug) => {
-                write!(f, "connection terminated with GOAWAY ({:?}): {}", code, debug)
+                write!(
+                    f,
+                    "connection terminated with GOAWAY ({:?}): {}",
+                    code, debug
+                )
             }
             H2ConnectionErrorKind::SettingsTimeout => write!(f, "settings acknowledgment timeout"),
-            H2ConnectionErrorKind::ProtocolViolation(msg) => write!(f, "protocol violation: {}", msg),
+            H2ConnectionErrorKind::ProtocolViolation(msg) => {
+                write!(f, "protocol violation: {}", msg)
+            }
             H2ConnectionErrorKind::CompressionFailure => write!(f, "header compression failure"),
         }
     }
@@ -341,16 +354,23 @@ impl std::fmt::Display for H2ErrorCode {
             H2ErrorCode::NoError => ("NO_ERROR", "graceful shutdown"),
             H2ErrorCode::ProtocolError => ("PROTOCOL_ERROR", "protocol error detected"),
             H2ErrorCode::InternalError => ("INTERNAL_ERROR", "implementation fault"),
-            H2ErrorCode::FlowControlError => ("FLOW_CONTROL_ERROR", "flow control protocol violated"),
+            H2ErrorCode::FlowControlError => {
+                ("FLOW_CONTROL_ERROR", "flow control protocol violated")
+            }
             H2ErrorCode::SettingsTimeout => ("SETTINGS_TIMEOUT", "settings not acknowledged"),
             H2ErrorCode::StreamClosed => ("STREAM_CLOSED", "frame received for closed stream"),
             H2ErrorCode::FrameSizeError => ("FRAME_SIZE_ERROR", "frame size incorrect"),
             H2ErrorCode::RefusedStream => ("REFUSED_STREAM", "stream not processed"),
             H2ErrorCode::Cancel => ("CANCEL", "stream cancelled"),
             H2ErrorCode::CompressionError => ("COMPRESSION_ERROR", "compression state not updated"),
-            H2ErrorCode::ConnectError => ("CONNECT_ERROR", "TCP connection error for CONNECT method"),
+            H2ErrorCode::ConnectError => {
+                ("CONNECT_ERROR", "TCP connection error for CONNECT method")
+            }
             H2ErrorCode::EnhanceYourCalm => ("ENHANCE_YOUR_CALM", "processing capacity exceeded"),
-            H2ErrorCode::InadequateSecurity => ("INADEQUATE_SECURITY", "negotiated TLS parameters inadequate"),
+            H2ErrorCode::InadequateSecurity => (
+                "INADEQUATE_SECURITY",
+                "negotiated TLS parameters inadequate",
+            ),
             H2ErrorCode::Http11Required => ("HTTP_1_1_REQUIRED", "use HTTP/1.1 for request"),
         };
         write!(f, "{} (0x{:x}): {}", name, *self as u32, description)
@@ -433,15 +453,16 @@ pub enum FrameTypeH3 {
     PushPromise, // 0x5
     GoAway,      // 0x7
     MaxPushId,   // 0xd
+    Unknown(u64),
 }
 
-// #[derive(Debug, Clone)]
-// pub struct Frame {
-//     pub frame_type: FrameType,
-//     pub flags: u8,
-//     pub stream_id: u32,
-//     pub payload: Bytes,
-// }
+#[derive(Debug, Clone)]
+pub struct Frame {
+    pub frame_type: FrameType,
+    pub flags: u8,
+    pub stream_id: u32,
+    pub payload: Bytes,
+}
 
 #[derive(Debug, Clone)]
 pub struct FrameH2 {

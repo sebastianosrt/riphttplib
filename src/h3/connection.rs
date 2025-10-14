@@ -2,17 +2,21 @@ use crate::h3::framing::{
     SETTINGS_MAX_FIELD_SECTION_SIZE, SETTINGS_QPACK_BLOCKED_STREAMS,
     SETTINGS_QPACK_MAX_TABLE_CAPACITY,
 };
-use crate::types::{FrameH3, FrameType, FrameTypeH3, Header, ProtocolError, Target};
-use bytes::{Bytes, BytesMut};
-use quinn::{Connection, RecvStream, SendStream, ClientConfig as QuinnClientConfig, Endpoint};
-use std::collections::HashMap;
+use crate::h3::qpack::{QpackDecodeStatus, SharedQpackState};
 use crate::stream::NoCertificateVerification;
+use crate::types::{
+    FrameH3, FrameType, FrameTypeH3, H3StreamErrorKind, Header, ProtocolError, Target,
+};
+use bytes::{Bytes, BytesMut};
+use quinn::{ClientConfig as QuinnClientConfig, Connection, Endpoint, RecvStream, SendStream};
+use std::collections::HashMap;
 use std::io;
 
-use std::sync::Arc;
-use tokio::net::lookup_host;
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::ClientConfig;
+use std::sync::Arc;
+use tokio::net::lookup_host;
+use tokio::time::{timeout, Duration};
 
 // Default HTTP/3 Settings Values
 pub const DEFAULT_QPACK_MAX_TABLE_CAPACITY: u64 = 0;
@@ -44,6 +48,11 @@ pub struct StreamInfo {
     pub recv_buf: BytesMut,
 }
 
+enum QpackStreamRole {
+    Encoder,
+    Decoder,
+}
+
 pub struct H3Connection {
     pub connection: Connection,
     pub state: ConnectionState,
@@ -53,10 +62,9 @@ pub struct H3Connection {
     pub next_stream_id: u32,
     pub control_send_stream: Option<SendStream>,
     pub control_recv_stream: Option<RecvStream>,
+    control_recv_buf: BytesMut,
+    pub qpack: SharedQpackState,
     // QPACK unidirectional streams (optional in this minimal implementation)
-    // TODO support bidirectional, use quinn
-    pub qpack_encoder_send: Option<SendStream>,
-    pub qpack_decoder_send: Option<SendStream>,
     pub qpack_encoder_recv: Option<RecvStream>,
     pub qpack_decoder_recv: Option<RecvStream>,
 }
@@ -102,7 +110,6 @@ impl H3Connection {
             .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))
     }
 
-    
     pub async fn connect(target: &Target) -> Result<Self, ProtocolError> {
         let host = target
             .host()
@@ -136,6 +143,10 @@ impl H3Connection {
         );
 
         let remote_settings = HashMap::new();
+        let qpack = SharedQpackState::new(
+            settings[&SETTINGS_QPACK_MAX_TABLE_CAPACITY],
+            settings[&SETTINGS_QPACK_BLOCKED_STREAMS],
+        );
 
         Self {
             connection,
@@ -146,8 +157,8 @@ impl H3Connection {
             next_stream_id: 0, // Client uses stream IDs 0, 4, 8, 12, ... (bidirectional client-initiated)
             control_send_stream: None,
             control_recv_stream: None,
-            qpack_encoder_send: None,
-            qpack_decoder_send: None,
+            control_recv_buf: BytesMut::new(),
+            qpack,
             qpack_encoder_recv: None,
             qpack_decoder_recv: None,
         }
@@ -165,14 +176,13 @@ impl H3Connection {
         self.send_stream_type(0x00).await?;
 
         // 3. Open QPACK unidirectional streams (encoder=0x02, decoder=0x03)
-        // Minimal implementation: just send stream types; not used further here.
-        if let Ok(enc_send) = self.connection.open_uni().await {
-            self.qpack_encoder_send = Some(enc_send);
-            Self::send_stream_type_on_option(&mut self.qpack_encoder_send, 0x02).await?;
+        if let Ok(mut enc_send) = self.connection.open_uni().await {
+            Self::send_stream_type_direct(&mut enc_send, 0x02).await?;
+            self.qpack.set_encoder_send(enc_send).await;
         }
-        if let Ok(dec_send) = self.connection.open_uni().await {
-            self.qpack_decoder_send = Some(dec_send);
-            Self::send_stream_type_on_option(&mut self.qpack_decoder_send, 0x03).await?;
+        if let Ok(mut dec_send) = self.connection.open_uni().await {
+            Self::send_stream_type_direct(&mut dec_send, 0x03).await?;
+            self.qpack.set_decoder_send(dec_send).await;
         }
 
         // 4. Send initial SETTINGS frame
@@ -222,6 +232,20 @@ impl H3Connection {
             }
         }
 
+        // Expect initial SETTINGS frame from peer control stream
+        if let Some(frame) = self.read_control_frame_blocking().await? {
+            if !matches!(frame.frame_type, FrameType::H3(FrameTypeH3::Settings)) {
+                return Err(ProtocolError::InvalidResponse(
+                    "First control frame must be SETTINGS".to_string(),
+                ));
+            }
+            self.handle_frame(&frame).await?;
+        } else {
+            return Err(ProtocolError::InvalidResponse(
+                "Control stream closed before SETTINGS".to_string(),
+            ));
+        }
+
         // 6. Connection is now open
         self.state = ConnectionState::Open;
         Ok(())
@@ -243,22 +267,153 @@ impl H3Connection {
         Ok(())
     }
 
-    async fn send_stream_type_on_option(
-        stream: &mut Option<SendStream>,
+    async fn send_stream_type_direct(
+        stream: &mut SendStream,
         stream_type: u64,
     ) -> Result<(), ProtocolError> {
-        if let Some(send_stream) = stream.as_mut() {
-            let mut buf = Vec::new();
-            Self::encode_varint_to_vec(&mut buf, stream_type);
-            send_stream.write_all(&buf).await.map_err(|e| {
-                ProtocolError::ConnectionFailed(format!("Failed to send stream type: {}", e))
-            })?;
-            Ok(())
-        } else {
-            Err(ProtocolError::RequestFailed(
-                "No stream available".to_string(),
-            ))
+        let mut buf = Vec::new();
+        Self::encode_varint_to_vec(&mut buf, stream_type);
+        stream.write_all(&buf).await.map_err(|e| {
+            ProtocolError::ConnectionFailed(format!("Failed to send stream type: {}", e))
+        })?;
+        Ok(())
+    }
+
+    async fn read_control_frame_blocking(&mut self) -> Result<Option<FrameH3>, ProtocolError> {
+        self.read_control_frame_internal(true).await
+    }
+
+    async fn try_read_control_frame(&mut self) -> Result<Option<FrameH3>, ProtocolError> {
+        if let Some(frame) = self.read_control_frame_internal(false).await? {
+            return Ok(Some(frame));
         }
+
+        let recv_stream = match self.control_recv_stream.as_mut() {
+            Some(stream) => stream,
+            None => return Ok(None),
+        };
+
+        let mut local_chunk = [0u8; 8192];
+        match timeout(Duration::from_millis(0), recv_stream.read(&mut local_chunk)).await {
+            Ok(Ok(Some(0))) => Ok(None),
+            Ok(Ok(Some(n))) => {
+                self.control_recv_buf.extend_from_slice(&local_chunk[..n]);
+                self.read_control_frame_internal(false).await
+            }
+            Ok(Ok(None)) => {
+                self.control_recv_stream = None;
+                Ok(None)
+            }
+            Ok(Err(e)) => Err(ProtocolError::ConnectionFailed(format!(
+                "Failed to read from control stream: {}",
+                e
+            ))),
+            Err(_) => Ok(None),
+        }
+    }
+
+    async fn read_control_frame_internal(
+        &mut self,
+        wait: bool,
+    ) -> Result<Option<FrameH3>, ProtocolError> {
+        let recv_stream = match self.control_recv_stream.as_mut() {
+            Some(stream) => stream,
+            None => return Ok(None),
+        };
+
+        let mut local_chunk = vec![0u8; 8192];
+        loop {
+            if let Some((frame, consumed)) = Self::try_parse_frame(&self.control_recv_buf, 0)? {
+                let _ = self.control_recv_buf.split_to(consumed);
+                return Ok(Some(frame));
+            }
+
+            if !wait {
+                return Ok(None);
+            }
+
+            let n_opt = recv_stream.read(&mut local_chunk).await.map_err(|e| {
+                ProtocolError::ConnectionFailed(format!(
+                    "Failed to read from control stream: {}",
+                    e
+                ))
+            })?;
+
+            match n_opt {
+                Some(0) => continue,
+                Some(n) => {
+                    self.control_recv_buf.extend_from_slice(&local_chunk[..n]);
+                }
+                None => {
+                    self.control_recv_stream = None;
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    async fn poll_qpack_stream(
+        qpack: &SharedQpackState,
+        stream: &mut Option<RecvStream>,
+        role: QpackStreamRole,
+        wait: bool,
+    ) -> Result<bool, ProtocolError> {
+        let recv_stream = match stream.as_mut() {
+            Some(stream) => stream,
+            None => return Ok(false),
+        };
+
+        let chunk_result = if wait {
+            recv_stream.read_chunk(usize::MAX, true).await
+        } else {
+            match timeout(
+                Duration::from_millis(0),
+                recv_stream.read_chunk(usize::MAX, true),
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(_) => return Ok(false),
+            }
+        };
+
+        match chunk_result {
+            Ok(Some(chunk)) => {
+                let bytes = chunk.bytes;
+                match role {
+                    QpackStreamRole::Encoder => qpack.handle_encoder_stream_bytes(bytes).await?,
+                    QpackStreamRole::Decoder => qpack.handle_decoder_stream_bytes(bytes).await?,
+                }
+                Ok(true)
+            }
+            Ok(None) => {
+                *stream = None;
+                Ok(false)
+            }
+            Err(e) => Err(ProtocolError::H3StreamError(
+                H3StreamErrorKind::ProtocolViolation(format!("Failed to read QPACK stream: {}", e)),
+            )),
+        }
+    }
+
+    async fn pump_qpack_encoder(&mut self, wait: bool) -> Result<bool, ProtocolError> {
+        Self::poll_qpack_stream(
+            &self.qpack,
+            &mut self.qpack_encoder_recv,
+            QpackStreamRole::Encoder,
+            wait,
+        )
+        .await
+    }
+
+    async fn pump_qpack_decoder(&mut self) -> Result<bool, ProtocolError> {
+        Self::poll_qpack_stream(
+            &self.qpack,
+            &mut self.qpack_decoder_recv,
+            QpackStreamRole::Decoder,
+            false,
+        )
+        .await
     }
 
     async fn read_stream_type(recv_stream: &mut RecvStream) -> Result<(u64, usize), ProtocolError> {
@@ -349,62 +504,10 @@ impl H3Connection {
         Ok((stream_id, send_stream))
     }
 
-    pub async fn send_headers(
+    pub async fn read_request_frame(
         &mut self,
         stream_id: u32,
-        headers: &[Header],
-    ) -> Result<(), ProtocolError> {
-        let headers_frame = FrameH3::headers(stream_id, headers)?;
-        self.send_request_frame(stream_id, &headers_frame).await
-    }
-
-    pub async fn send_data(&mut self, stream_id: u32, data: &Bytes) -> Result<(), ProtocolError> {
-        let data_frame = FrameH3::data(stream_id, data.clone());
-        self.send_request_frame(stream_id, &data_frame).await
-    }
-
-    async fn send_request_frame(
-        &mut self,
-        stream_id: u32,
-        frame: &FrameH3,
-    ) -> Result<(), ProtocolError> {
-        // Route request frames over the correct bidirectional request stream
-        let _ = frame.serialize()?;
-        // We don't store the SendStream; callers should write directly, or we can
-        // extend this to store SendStream if needed in future.
-        Err(ProtocolError::RequestFailed(format!(
-            "send_request_frame unavailable: caller must write via SendStream for stream {}",
-            stream_id
-        )))
-    }
-
-    pub async fn read_frame(&mut self) -> Result<FrameH3, ProtocolError> {
-        if let Some(ref mut recv_stream) = self.control_recv_stream {
-            let mut buf = [0u8; 8192]; // Buffer for reading control frames
-
-            let n = recv_stream
-                .read(&mut buf)
-                .await
-                .map_err(|e| {
-                    ProtocolError::ConnectionFailed(format!(
-                        "Failed to read from control stream: {}",
-                        e
-                    ))
-                })?
-                .ok_or_else(|| {
-                    ProtocolError::InvalidResponse("Control stream closed unexpectedly".to_string())
-                })?;
-
-            let (frame, _consumed) = FrameH3::parse(&buf[..n])?;
-            Ok(frame)
-        } else {
-            Err(ProtocolError::RequestFailed(
-                "No control stream available".to_string(),
-            ))
-        }
-    }
-
-    pub async fn read_request_frame(&mut self, stream_id: u32) -> Result<Option<FrameH3>, ProtocolError> {
+    ) -> Result<Option<FrameH3>, ProtocolError> {
         let stream_info = self.streams.get_mut(&stream_id).ok_or_else(|| {
             ProtocolError::RequestFailed(format!("Unknown request stream {}", stream_id))
         })?;
@@ -416,7 +519,7 @@ impl H3Connection {
 
         loop {
             // Try to parse a frame from current buffer
-            if let Some((frame, consumed)) = Self::try_parse_frame(&*buf)? {
+            if let Some((frame, consumed)) = Self::try_parse_frame(&*buf, stream_id)? {
                 // advance buffer by consumed (drain)
                 let _ = buf.split_to(consumed);
                 return Ok(Some(frame));
@@ -431,23 +534,71 @@ impl H3Connection {
             })?;
 
             match n_opt {
-                Some(0) => {
-                    // EOF - normal stream completion
-                    return Ok(None);
-                }
+                Some(0) => continue,
                 Some(n) => {
                     buf.extend_from_slice(&local_chunk[..n]);
-                    continue;
                 }
                 None => {
-                    // FIN with no data - normal stream completion
-                    return Ok(None);
+                    if buf.is_empty() {
+                        return Ok(None);
+                    } else {
+                        return Err(ProtocolError::InvalidResponse(
+                            "Stream closed with incomplete frame".to_string(),
+                        ));
+                    }
                 }
             }
         }
     }
 
-    fn try_parse_frame(buf: &BytesMut) -> Result<Option<(FrameH3, usize)>, ProtocolError> {
+    pub async fn poll_control(&mut self) -> Result<(), ProtocolError> {
+        while let Some(frame) = self.try_read_control_frame().await? {
+            self.handle_frame(&frame).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn encode_headers(
+        &self,
+        stream_id: u32,
+        headers: &[Header],
+    ) -> Result<Bytes, ProtocolError> {
+        self.qpack.encode_headers(stream_id as u64, headers).await
+    }
+
+    pub async fn decode_headers(
+        &mut self,
+        stream_id: u32,
+        payload: &[u8],
+    ) -> Result<Vec<Header>, ProtocolError> {
+        // Process any pending QPACK feedback
+        let _ = self.pump_qpack_decoder().await?;
+        let _ = self.pump_qpack_encoder(false).await?;
+
+        match self.qpack.decode_headers(stream_id as u64, payload).await? {
+            QpackDecodeStatus::Complete(headers) => return Ok(headers),
+            QpackDecodeStatus::Blocked => loop {
+                let progressed = self.pump_qpack_encoder(true).await?;
+                if !progressed {
+                    return Err(ProtocolError::H3QpackError(
+                        "Decoder remained blocked".to_string(),
+                    ));
+                }
+
+                if let Some(status) = self.qpack.poll_unblocked(stream_id as u64).await? {
+                    match status {
+                        QpackDecodeStatus::Complete(headers) => return Ok(headers),
+                        QpackDecodeStatus::Blocked => continue,
+                    }
+                }
+            },
+        }
+    }
+
+    fn try_parse_frame(
+        buf: &BytesMut,
+        stream_id: u32,
+    ) -> Result<Option<(FrameH3, usize)>, ProtocolError> {
         if buf.is_empty() {
             return Ok(None);
         }
@@ -479,17 +630,12 @@ impl H3Connection {
             0x5 => FrameTypeH3::PushPromise,
             0x7 => FrameTypeH3::GoAway,
             0x0d => FrameTypeH3::MaxPushId,
-            _ => {
-                return Err(ProtocolError::InvalidResponse(format!(
-                    "Unknown frame type: {}",
-                    ftype
-                )));
-            }
+            other => FrameTypeH3::Unknown(other),
         };
 
         let frame = FrameH3 {
             frame_type: FrameType::H3(frame_type),
-            stream_id: 0,
+            stream_id,
             payload,
         };
         Ok(Some((frame, header_len + len as usize)))
@@ -525,6 +671,16 @@ impl H3Connection {
 
             self.apply_setting(setting_id, setting_value)?;
         }
+
+        let max_table = *self
+            .remote_settings
+            .get(&SETTINGS_QPACK_MAX_TABLE_CAPACITY)
+            .unwrap_or(&0);
+        let max_blocked = *self
+            .remote_settings
+            .get(&SETTINGS_QPACK_BLOCKED_STREAMS)
+            .unwrap_or(&0);
+        self.qpack.configure_encoder(max_table, max_blocked).await?;
         Ok(())
     }
 

@@ -1,7 +1,7 @@
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::ServerName;
-use rustls::DigitallySignedStruct;
 use rustls::ClientConfig;
+use rustls::DigitallySignedStruct;
 use std::io;
 use tokio::net::TcpStream;
 use tokio_rustls::{client::TlsStream, TlsConnector};
@@ -70,7 +70,11 @@ pub async fn create_tcp_stream(host: &str, port: u16) -> io::Result<TransportStr
     Ok(TransportStream::Tcp(stream))
 }
 
-pub async fn create_tls_stream(host: &str, port: u16, server_name: &str) -> io::Result<TransportStream> {
+pub async fn create_tls_stream(
+    host: &str,
+    port: u16,
+    server_name: &str,
+) -> io::Result<TransportStream> {
     let tcp_stream = TcpStream::connect((host, port)).await?;
 
     // Create TLS configuration that skips certificate verification

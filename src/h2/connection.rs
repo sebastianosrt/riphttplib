@@ -1,6 +1,9 @@
 use crate::h2::framing::FRAME_HEADER_SIZE;
 use crate::stream::{create_h2_tls_stream, TransportStream};
-use crate::types::{FrameH2, FrameType, FrameTypeH2, Header, ProtocolError, Target, H2ErrorCode, H2StreamErrorKind, H2ConnectionErrorKind};
+use crate::types::{
+    FrameH2, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode, H2StreamErrorKind, Header,
+    ProtocolError, Target,
+};
 use bytes::Bytes;
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -511,7 +514,7 @@ impl H2Connection {
     async fn handle_rst_stream_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         if frame.payload.len() != 4 {
             return Err(ProtocolError::H2ProtocolError(
-                "RST_STREAM frame must have 4-byte payload".to_string()
+                "RST_STREAM frame must have 4-byte payload".to_string(),
             ));
         }
 
@@ -527,9 +530,9 @@ impl H2Connection {
         }
 
         let h2_error = H2ErrorCode::from(error_code);
-        Err(ProtocolError::H2StreamError(
-            H2StreamErrorKind::Reset(h2_error)
-        ))
+        Err(ProtocolError::H2StreamError(H2StreamErrorKind::Reset(
+            h2_error,
+        )))
     }
 
     async fn handle_ping_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
@@ -576,7 +579,7 @@ impl H2Connection {
 
         let h2_error = H2ErrorCode::from(error_code);
         Err(ProtocolError::H2ConnectionError(
-            H2ConnectionErrorKind::GoAway(h2_error, debug_data)
+            H2ConnectionErrorKind::GoAway(h2_error, debug_data),
         ))
     }
 

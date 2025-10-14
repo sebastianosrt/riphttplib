@@ -1,7 +1,7 @@
 use crate::h2::connection::H2Connection;
 use crate::types::{
-    FrameType, FrameTypeH2, Header, Protocol, ProtocolError, Request, Response, Target,
-    H2StreamErrorKind,
+    FrameType, FrameTypeH2, H2StreamErrorKind, Header, Protocol, ProtocolError, Request, Response,
+    Target,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -146,9 +146,12 @@ impl H2Client {
         connection
             .send_headers(stream_id, &headers, end_stream)
             .await
-            .map_err(|e| ProtocolError::H2StreamError(
-                H2StreamErrorKind::ProtocolViolation(format!("Failed to send headers: {}", e))
-            ))?;
+            .map_err(|e| {
+                ProtocolError::H2StreamError(H2StreamErrorKind::ProtocolViolation(format!(
+                    "Failed to send headers: {}",
+                    e
+                )))
+            })?;
 
         if let Some(body) = request.body.as_ref() {
             if !body.is_empty() {
@@ -157,9 +160,10 @@ impl H2Client {
                     .send_data(stream_id, body, end_stream)
                     .await
                     .map_err(|e| {
-                        ProtocolError::H2StreamError(
-                            H2StreamErrorKind::ProtocolViolation(format!("Failed to send data: {}", e))
-                        )
+                        ProtocolError::H2StreamError(H2StreamErrorKind::ProtocolViolation(format!(
+                            "Failed to send data: {}",
+                            e
+                        )))
                     })?;
             }
         }
@@ -171,9 +175,10 @@ impl H2Client {
                     .send_headers(stream_id, &normalized_trailers, true)
                     .await
                     .map_err(|e| {
-                        ProtocolError::H2StreamError(
-                            H2StreamErrorKind::ProtocolViolation(format!("Failed to send trailers: {}", e))
-                        )
+                        ProtocolError::H2StreamError(H2StreamErrorKind::ProtocolViolation(format!(
+                            "Failed to send trailers: {}",
+                            e
+                        )))
                     })?;
             }
         }
@@ -291,7 +296,7 @@ impl H2Client {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Protocol for H2Client {
     async fn send(&self, target: &Target, request: Request) -> Result<Response, ProtocolError> {
         self.send_request(target, request).await

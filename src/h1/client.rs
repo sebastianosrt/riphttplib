@@ -123,7 +123,10 @@ impl H1Client {
         Ok(())
     }
 
-    async fn write_to_stream(stream: &mut TransportStream, data: &[u8]) -> Result<(), ProtocolError> {
+    async fn write_to_stream(
+        stream: &mut TransportStream,
+        data: &[u8],
+    ) -> Result<(), ProtocolError> {
         match stream {
             TransportStream::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io)?,
             TransportStream::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io)?,
@@ -347,7 +350,7 @@ impl H1Client {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Protocol for H1Client {
     async fn send(&self, target: &Target, request: Request) -> Result<Response, ProtocolError> {
         self.send_request(target, request).await

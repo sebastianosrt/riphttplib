@@ -1,8 +1,5 @@
-use crate::types::{FrameH3, FrameType, FrameTypeH3, Header, ProtocolError};
+use crate::types::{FrameH3, FrameType, FrameTypeH3, ProtocolError};
 use bytes::{BufMut, Bytes, BytesMut};
-use ls_qpack_rs::decoder::Decoder;
-use ls_qpack_rs::encoder::Encoder;
-use ls_qpack_rs::StreamId;
 
 // HTTP/3 Frame Types (RFC 9114 Section 7.2)
 pub const DATA_FRAME_TYPE: u64 = 0x0;
@@ -29,11 +26,6 @@ impl FrameH3 {
 
     pub fn data(stream_id: u32, data: Bytes) -> Self {
         Self::new(FrameTypeH3::Data, stream_id, data)
-    }
-
-    pub fn headers(stream_id: u32, headers: &[Header]) -> Result<Self, ProtocolError> {
-        let payload = Self::encode_headers_qpack(headers)?;
-        Ok(Self::new(FrameTypeH3::Headers, stream_id, payload))
     }
 
     pub fn settings(settings: &[(u64, u64)]) -> Self {
@@ -63,72 +55,6 @@ impl FrameH3 {
         Self::new(FrameTypeH3::CancelPush, stream_id, payload.freeze())
     }
 
-    pub fn push_promise(
-        stream_id: u32,
-        push_id: u64,
-        headers: &[Header],
-    ) -> Result<Self, ProtocolError> {
-        let mut payload = BytesMut::new();
-        Self::encode_varint(&mut payload, push_id);
-
-        let header_block = Self::encode_headers_qpack(headers)?;
-        payload.put_slice(&header_block);
-
-        Ok(Self::new(
-            FrameTypeH3::PushPromise,
-            stream_id,
-            payload.freeze(),
-        ))
-    }
-
-    fn encode_headers_qpack(headers: &[Header]) -> Result<Bytes, ProtocolError> {
-        let header_tuples: Vec<(&str, &str)> = headers
-            .iter()
-            .map(|h| {
-                let name = h.name.as_str();
-                let value = h.value.as_ref().map(|v| v.as_str()).unwrap_or("");
-                (name, value)
-            })
-            .collect();
-
-        let (encoded_headers, _) = Encoder::new()
-            .encode_all(StreamId::new(0), header_tuples)
-            .map_err(|e| ProtocolError::H3QpackError(format!("QPACK encode error: {:?}", e)))?
-            .into();
-
-        Ok(Bytes::from(encoded_headers))
-    }
-
-    pub fn decode_headers_qpack(payload: &[u8]) -> Result<Vec<Header>, ProtocolError> {
-        let decoded_result = Decoder::new(0, 0)
-            .decode(StreamId::new(0), payload.to_vec())
-            .map_err(|e| ProtocolError::H3QpackError(format!("QPACK decode error: {:?}", e)))?;
-
-        let decoded_headers = decoded_result
-            .take()
-            .ok_or_else(|| ProtocolError::InvalidResponse("No headers decoded".to_string()))?;
-
-        let headers = decoded_headers
-            .headers()
-            .iter()
-            .map(|header| {
-                let name_str = header.name().to_string();
-                let value_str = header.value();
-                let value_opt = if value_str.is_empty() {
-                    None
-                } else {
-                    Some(value_str.to_string())
-                };
-                Ok(Header {
-                    name: name_str,
-                    value: value_opt,
-                })
-            })
-            .collect::<Result<Vec<_>, ProtocolError>>()?;
-
-        Ok(headers)
-    }
-
     pub fn get_frame_type_u64(&self) -> u64 {
         match &self.frame_type {
             FrameType::H3(frame_type) => match frame_type {
@@ -139,17 +65,9 @@ impl FrameH3 {
                 FrameTypeH3::PushPromise => PUSH_PROMISE_FRAME_TYPE,
                 FrameTypeH3::GoAway => GOAWAY_FRAME_TYPE,
                 FrameTypeH3::MaxPushId => MAX_PUSH_ID_FRAME_TYPE,
+                FrameTypeH3::Unknown(value) => *value,
             },
             FrameType::H2(_) => 0, // Not applicable for H3 framing
-        }
-    }
-
-    pub fn decode_headers(&self) -> Result<Vec<Header>, ProtocolError> {
-        match &self.frame_type {
-            FrameType::H3(FrameTypeH3::Headers) => Self::decode_headers_qpack(&self.payload),
-            _ => Err(ProtocolError::RequestFailed(
-                "Frame is not a header frame".to_string(),
-            )),
         }
     }
 
@@ -205,12 +123,7 @@ impl FrameH3 {
             PUSH_PROMISE_FRAME_TYPE => FrameTypeH3::PushPromise,
             GOAWAY_FRAME_TYPE => FrameTypeH3::GoAway,
             MAX_PUSH_ID_FRAME_TYPE => FrameTypeH3::MaxPushId,
-            _ => {
-                return Err(ProtocolError::InvalidResponse(format!(
-                    "Unknown frame type: {}",
-                    frame_type_u64
-                )));
-            }
+            other => FrameTypeH3::Unknown(other),
         };
 
         let payload = Bytes::copy_from_slice(&data[offset..offset + length as usize]);

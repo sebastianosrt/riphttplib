@@ -26,8 +26,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Header::new("User-Agent".to_string(), "RipHTTPLib-Demo/1.0".to_string()),
         ])
         .with_trailers(Some(vec![
-            Header::new("trailxxxxxxx".to_string(), "xxxxxxxxxxRipHTTPLib-Demo/1.0".to_string()),
-            Header::new("aapath".to_string(), "/xx\r\nxxxxxxxxRipHTTPLib-Demo/1.0".to_string()),
+            Header::new(
+                "trailxxxxxxx".to_string(),
+                "xxxxxxxxxxRipHTTPLib-Demo/1.0".to_string(),
+            ),
+            Header::new(
+                "aapath".to_string(),
+                "/xx\r\nxxxxxxxxRipHTTPLib-Demo/1.0".to_string(),
+            ),
         ]));
     match client.send_request(&target, request).await {
         Ok(response) => {

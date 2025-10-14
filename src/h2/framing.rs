@@ -192,17 +192,19 @@ impl FrameH2 {
                     .into_iter()
                     .map(|(name, value)| {
                         let name_str = String::from_utf8(name).map_err(|e| {
-                            ProtocolError::HeaderEncodingError(
-                                format!("Invalid UTF-8 in header name: {}", e)
-                            )
+                            ProtocolError::HeaderEncodingError(format!(
+                                "Invalid UTF-8 in header name: {}",
+                                e
+                            ))
                         })?;
                         let value_str = if value.is_empty() {
                             None
                         } else {
                             Some(String::from_utf8(value).map_err(|e| {
-                                ProtocolError::HeaderEncodingError(
-                                    format!("Invalid UTF-8 in header value: {}", e)
-                                )
+                                ProtocolError::HeaderEncodingError(format!(
+                                    "Invalid UTF-8 in header value: {}",
+                                    e
+                                ))
                             })?)
                         };
                         Ok(Header {
@@ -274,10 +276,11 @@ impl FrameH2 {
 
         // TODO maybe i can remove this check
         if self.payload.len() > MAX_FRAME_SIZE_UPPER_BOUND as usize {
-            return Err(ProtocolError::H2FrameSizeError(
-                format!("Frame payload size {} exceeds maximum {}",
-                    self.payload.len(), MAX_FRAME_SIZE_UPPER_BOUND)
-            ));
+            return Err(ProtocolError::H2FrameSizeError(format!(
+                "Frame payload size {} exceeds maximum {}",
+                self.payload.len(),
+                MAX_FRAME_SIZE_UPPER_BOUND
+            )));
         }
 
         let mut result = BytesMut::with_capacity(FRAME_HEADER_SIZE + self.payload.len());
