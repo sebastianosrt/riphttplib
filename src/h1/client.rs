@@ -1,20 +1,14 @@
 use crate::stream::{create_stream, TransportStream};
 use crate::types::{Header, Protocol, ProtocolError, Request, Response, Target};
+use crate::utils::{
+    CHUNKED_ENCODING, CONTENT_LENGTH_HEADER, CRLF, HOST_HEADER, HTTP_VERSION_1_1,
+    TRANSFER_ENCODING_HEADER, USER_AGENT, USER_AGENT_HEADER,
+};
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 pub struct H1Client;
-
-// HTTP/1.1 Constants
-static CRLF: &str = "\r\n";
-static USER_AGENT: &str = "riphttplib/0.1.0";
-static HTTP_VERSION: &str = "HTTP/1.1";
-static HOST_HEADER: &str = "host";
-static CONTENT_LENGTH_HEADER: &str = "content-length";
-static TRANSFER_ENCODING_HEADER: &str = "transfer-encoding";
-static USER_AGENT_HEADER: &str = "user-agent";
-static CHUNKED_ENCODING: &str = "chunked";
 
 impl H1Client {
     pub fn new() -> Self {

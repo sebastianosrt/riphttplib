@@ -3,7 +3,7 @@ use crate::types::{
     FrameType, FrameTypeH3, H3StreamErrorKind, Header, Protocol, ProtocolError, Request, Response,
     Target,
 };
-use crate::utils::{merge_headers, normalize_headers, prepare_pseudo_headers};
+use crate::utils::{merge_headers, normalize_headers, prepare_pseudo_headers, HTTP_VERSION_3_0};
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -119,11 +119,11 @@ impl H3Client {
         stream_id: u32,
     ) -> Result<Response, ProtocolError> {
         let mut status: Option<u16> = None;
-        let mut headers = Vec::with_capacity(16);
-        let mut body = Vec::with_capacity(1024);
+        let mut headers = Vec::new();
+        let mut body = Vec::new();
         let mut trailers: Option<Vec<Header>> = None;
         let mut headers_received = false;
-        let protocol_version = "HTTP/3.0".to_string();
+        let protocol_version = HTTP_VERSION_3_0.to_string();
 
         loop {
             connection.poll_control().await?;

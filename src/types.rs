@@ -116,17 +116,6 @@ impl Response {
             trailers: None,
         }
     }
-
-    // TODO consider removing
-    pub fn new_with_protocol(status: u16, protocol_version: String) -> Self {
-        Self {
-            status,
-            protocol_version,
-            headers: Vec::new(),
-            body: Bytes::new(),
-            trailers: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -161,7 +150,7 @@ impl Request {
         self.body = Some(body.into());
         self
     }
-    // TODO maybe mergeable with the above
+
     pub fn with_optional_body<B: Into<Bytes>>(mut self, body: Option<B>) -> Self {
         self.body = body.map(Into::into);
         self
@@ -454,14 +443,6 @@ pub enum FrameTypeH3 {
     GoAway,      // 0x7
     MaxPushId,   // 0xd
     Unknown(u64),
-}
-
-#[derive(Debug, Clone)]
-pub struct Frame {
-    pub frame_type: FrameType,
-    pub flags: u8,
-    pub stream_id: u32,
-    pub payload: Bytes,
 }
 
 #[derive(Debug, Clone)]

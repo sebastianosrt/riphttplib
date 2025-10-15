@@ -1,8 +1,19 @@
 use crate::{
-    types::{Header, ProtocolError, Target},
-    Request,
+    types::{Header, ProtocolError, Request, Target},
 };
+use bytes::Bytes;
 use url::Url;
+
+pub const USER_AGENT: &str = "riphttplib/0.1.0";
+pub const CRLF: &str = "\r\n";
+pub const HTTP_VERSION_1_1: &str = "HTTP/1.1";
+pub const HTTP_VERSION_2_0: &str = "HTTP/2.0";
+pub const HTTP_VERSION_3_0: &str = "HTTP/3.0";
+pub const HOST_HEADER: &str = "host";
+pub const CONTENT_LENGTH_HEADER: &str = "content-length";
+pub const TRANSFER_ENCODING_HEADER: &str = "transfer-encoding";
+pub const USER_AGENT_HEADER: &str = "user-agent";
+pub const CHUNKED_ENCODING: &str = "chunked";
 
 pub fn parse_target(target: &str) -> Result<Target, ProtocolError> {
     let url = Url::parse(target)
@@ -156,4 +167,16 @@ pub fn merge_headers(pseudo: Vec<Header>, request: &Request) -> Vec<Header> {
             }),
     );
     headers
+}
+
+pub fn build_request(
+    method: impl Into<String>,
+    headers: Vec<Header>,
+    body: Option<Bytes>,
+    trailers: Option<Vec<Header>>,
+) -> Request {
+    Request::new(method)
+        .with_headers(headers)
+        .with_optional_body(body)
+        .with_trailers(trailers)
 }

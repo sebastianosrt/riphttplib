@@ -5,9 +5,9 @@ pub mod stream;
 pub mod types;
 pub mod utils;
 
-pub use h1::*;
-pub use h2::*;
-pub use h3::*;
+pub use h1::client::H1Client;
+pub use h2::client::H2Client;
+pub use h3::client::H3Client;
 pub use stream::*;
 pub use types::*;
 pub use utils::*;
