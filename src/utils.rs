@@ -1,4 +1,7 @@
-use crate::types::{Header, ProtocolError, Target};
+use crate::{
+    types::{Header, ProtocolError, Target},
+    Request,
+};
 use url::Url;
 
 pub fn parse_target(target: &str) -> Result<Target, ProtocolError> {
@@ -53,4 +56,104 @@ pub fn parse_header(header: &str) -> Option<Header> {
             Some(Header::new_valueless(header.to_string().to_lowercase()))
         }
     }
+}
+
+pub fn normalize_headers(headers: &[Header]) -> Vec<Header> {
+    headers
+        .iter()
+        .map(|h| Header {
+            name: h.name.to_lowercase(),
+            value: h.value.clone(),
+        })
+        .collect()
+}
+
+pub fn prepare_pseudo_headers(
+    request: &Request,
+    target: &Target,
+) -> Result<Vec<Header>, ProtocolError> {
+    let mut pseudo_headers: Vec<Header> = request
+        .headers
+        .iter()
+        .filter(|h| h.name.starts_with(':'))
+        .cloned()
+        .collect();
+
+    if !pseudo_headers.iter().any(|h| h.name == ":method") {
+        pseudo_headers.insert(
+            0,
+            Header::new(":method".to_string(), request.method.clone()),
+        );
+    }
+
+    let method = request.method.to_uppercase();
+    match method.as_str() {
+        "CONNECT" => {
+            if !pseudo_headers.iter().any(|h| h.name == ":authority") {
+                let authority = target.authority().ok_or_else(|| {
+                    ProtocolError::InvalidTarget(
+                        "CONNECT requests require an authority".to_string(),
+                    )
+                })?;
+                pseudo_headers.push(Header::new(":authority".to_string(), authority));
+            }
+            pseudo_headers.retain(|h| h.name != ":scheme" && h.name != ":path");
+        }
+        "OPTIONS" => {
+            let path_value = if target.path_only() == "*" {
+                "*".to_string()
+            } else {
+                target.path()
+            };
+            if !pseudo_headers.iter().any(|h| h.name == ":path") {
+                pseudo_headers.push(Header::new(":path".to_string(), path_value));
+            }
+            if !pseudo_headers.iter().any(|h| h.name == ":authority") {
+                if let Some(authority) = target.authority() {
+                    pseudo_headers.push(Header::new(":authority".to_string(), authority));
+                }
+            }
+            if !pseudo_headers.iter().any(|h| h.name == ":scheme") {
+                pseudo_headers.push(Header::new(
+                    ":scheme".to_string(),
+                    target.scheme().to_string(),
+                ));
+            }
+        }
+        _ => {
+            if !pseudo_headers.iter().any(|h| h.name == ":path") {
+                pseudo_headers.push(Header::new(":path".to_string(), target.path()));
+            }
+            if !pseudo_headers.iter().any(|h| h.name == ":scheme") {
+                pseudo_headers.push(Header::new(
+                    ":scheme".to_string(),
+                    target.scheme().to_string(),
+                ));
+            }
+            if !pseudo_headers.iter().any(|h| h.name == ":authority") {
+                if let Some(authority) = target.authority() {
+                    pseudo_headers.push(Header::new(":authority".to_string(), authority));
+                }
+            }
+        }
+    }
+
+    Ok(normalize_headers(&pseudo_headers))
+}
+
+pub fn merge_headers(pseudo: Vec<Header>, request: &Request) -> Vec<Header> {
+    let mut headers = Vec::with_capacity(pseudo.len() + request.headers.len());
+    headers.extend(pseudo);
+    headers.extend(
+        request
+            .headers
+            .iter()
+            .filter(|h| !h.name.starts_with(':'))
+            .cloned()
+            .map(|mut h| {
+                h.name = h.name.to_lowercase();
+                h
+            }),
+    );
+    headers
 }

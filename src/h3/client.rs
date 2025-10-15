@@ -3,6 +3,7 @@ use crate::types::{
     FrameType, FrameTypeH3, H3StreamErrorKind, Header, Protocol, ProtocolError, Request, Response,
     Target,
 };
+use crate::utils::{merge_headers, normalize_headers, prepare_pseudo_headers};
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -25,106 +26,6 @@ impl H3Client {
             .with_trailers(trailers)
     }
 
-    fn normalize_headers(headers: &[Header]) -> Vec<Header> {
-        headers
-            .iter()
-            .map(|h| Header {
-                name: h.name.to_lowercase(),
-                value: h.value.clone(),
-            })
-            .collect()
-    }
-
-    fn prepare_pseudo_headers(
-        request: &Request,
-        target: &Target,
-    ) -> Result<Vec<Header>, ProtocolError> {
-        let mut pseudo_headers: Vec<Header> = request
-            .headers
-            .iter()
-            .filter(|h| h.name.starts_with(':'))
-            .cloned()
-            .collect();
-
-        if !pseudo_headers.iter().any(|h| h.name == ":method") {
-            pseudo_headers.insert(
-                0,
-                Header::new(":method".to_string(), request.method.clone()),
-            );
-        }
-
-        let method = request.method.to_uppercase();
-        match method.as_str() {
-            "CONNECT" => {
-                if !pseudo_headers.iter().any(|h| h.name == ":authority") {
-                    let authority = target.authority().ok_or_else(|| {
-                        ProtocolError::InvalidTarget(
-                            "CONNECT requests require an authority".to_string(),
-                        )
-                    })?;
-                    pseudo_headers.push(Header::new(":authority".to_string(), authority));
-                }
-                pseudo_headers.retain(|h| h.name != ":scheme" && h.name != ":path");
-            }
-            "OPTIONS" => {
-                let path = if target.path_only() == "*" {
-                    "*".to_string()
-                } else {
-                    target.path()
-                };
-                if !pseudo_headers.iter().any(|h| h.name == ":path") {
-                    pseudo_headers.push(Header::new(":path".to_string(), path));
-                }
-                if !pseudo_headers.iter().any(|h| h.name == ":authority") {
-                    if let Some(authority) = target.authority() {
-                        pseudo_headers.push(Header::new(":authority".to_string(), authority));
-                    }
-                }
-                if !pseudo_headers.iter().any(|h| h.name == ":scheme") {
-                    pseudo_headers.push(Header::new(
-                        ":scheme".to_string(),
-                        target.scheme().to_string(),
-                    ));
-                }
-            }
-            _ => {
-                if !pseudo_headers.iter().any(|h| h.name == ":path") {
-                    pseudo_headers.push(Header::new(":path".to_string(), target.path()));
-                }
-                if !pseudo_headers.iter().any(|h| h.name == ":scheme") {
-                    pseudo_headers.push(Header::new(
-                        ":scheme".to_string(),
-                        target.scheme().to_string(),
-                    ));
-                }
-                if !pseudo_headers.iter().any(|h| h.name == ":authority") {
-                    if let Some(authority) = target.authority() {
-                        pseudo_headers.push(Header::new(":authority".to_string(), authority));
-                    }
-                }
-            }
-        }
-
-        Ok(Self::normalize_headers(&pseudo_headers))
-    }
-
-    fn merge_headers(pseudo: Vec<Header>, request: &Request) -> Vec<Header> {
-        let mut headers = Vec::with_capacity(pseudo.len() + request.headers.len());
-        headers.extend(pseudo);
-        headers.extend(
-            request
-                .headers
-                .iter()
-                .filter(|h| !h.name.starts_with(':'))
-                .cloned()
-                .map(|mut h| {
-                    h.name = h.name.to_lowercase();
-                    h
-                }),
-        );
-        headers
-    }
-
     async fn send_request_inner(
         &self,
         connection: &mut H3Connection,
@@ -133,8 +34,8 @@ impl H3Client {
     ) -> Result<u32, ProtocolError> {
         let (stream_id, mut send_stream) = connection.create_request_stream().await?;
 
-        let pseudo_headers = Self::prepare_pseudo_headers(request, target)?;
-        let headers = Self::merge_headers(pseudo_headers, request);
+        let pseudo_headers = prepare_pseudo_headers(request, target)?;
+        let headers = merge_headers(pseudo_headers, request);
 
         let header_block = connection.encode_headers(stream_id, &headers).await?;
         let headers_frame =
@@ -169,7 +70,7 @@ impl H3Client {
 
         if let Some(trailers) = request.trailers.as_ref() {
             if !trailers.is_empty() {
-                let normalized_trailers = Self::normalize_headers(trailers);
+                let normalized_trailers = normalize_headers(trailers);
                 let trailer_block = connection
                     .encode_headers(stream_id, &normalized_trailers)
                     .await?;

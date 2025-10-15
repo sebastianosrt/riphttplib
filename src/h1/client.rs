@@ -41,20 +41,21 @@ impl H1Client {
         Self::read_response(&mut stream, &request.method).await
     }
 
-    // TODO: write to stream or buffer and write all?
     async fn write_request(
         stream: &mut TransportStream,
         target: &Target,
         request: &Request,
     ) -> Result<(), ProtocolError> {
+        let mut req = Vec::new();
         let path = target.path();
 
-        let request_line = format!("{} {} {}{}", request.method, path, HTTP_VERSION, CRLF);
-        Self::write_to_stream(stream, request_line.as_bytes()).await?;
-
         let empty_trailers = Vec::new();
-        let headers = &request.headers;
+        let mut headers = request.headers.clone();
         let trailers = request.trailers.as_ref().unwrap_or(&empty_trailers);
+
+        req.extend_from_slice(
+            format!("{} {} {}{}", request.method, path, HTTP_VERSION, CRLF).as_bytes(),
+        ); // request line
 
         let has_host = headers
             .iter()
@@ -63,21 +64,17 @@ impl H1Client {
             let authority = target
                 .authority()
                 .unwrap_or_else(|| target.host().unwrap_or_default().to_string());
-            let host_header = format!("Host: {}{}", authority, CRLF);
-            Self::write_to_stream(stream, host_header.as_bytes()).await?;
+            headers.push(Header::new(HOST_HEADER.to_string(), authority.to_string()));
         }
 
         let has_user_agent = headers
             .iter()
             .any(|h| h.name.eq_ignore_ascii_case(USER_AGENT_HEADER));
         if !has_user_agent {
-            let user_agent_header = format!("User-Agent: {}{}", USER_AGENT, CRLF);
-            Self::write_to_stream(stream, user_agent_header.as_bytes()).await?;
-        }
-
-        for header in headers {
-            let header_line = format!("{}{}", header.to_string(), CRLF);
-            Self::write_to_stream(stream, header_line.as_bytes()).await?;
+            headers.push(Header::new(
+                USER_AGENT_HEADER.to_string(),
+                USER_AGENT.to_string(),
+            ));
         }
 
         let has_content_length = headers
@@ -96,25 +93,35 @@ impl H1Client {
             body_len.is_some() && !use_chunked && !has_content_length;
 
         if should_generate_content_length {
-            let length_header = format!("Content-Length: {}{}", body_len.unwrap(), CRLF);
-            Self::write_to_stream(stream, length_header.as_bytes()).await?;
+            headers.push(Header::new(
+                CONTENT_LENGTH_HEADER.to_string(),
+                body_len.unwrap().to_string(),
+            ));
         } else if use_chunked && !has_chunked {
-            // Add Transfer-Encoding: chunked only when we must synthesize it.
-            let chunked_header = format!("Transfer-Encoding: {}{}", CHUNKED_ENCODING, CRLF);
-            Self::write_to_stream(stream, chunked_header.as_bytes()).await?;
+            headers.push(Header::new(
+                TRANSFER_ENCODING_HEADER.to_string(),
+                CHUNKED_ENCODING.to_string(),
+            ));
+        }
+
+        for header in &headers {
+            req.extend_from_slice(format!("{}{}", header.to_string(), CRLF).as_bytes());
         }
 
         // End headers
-        Self::write_to_stream(stream, CRLF.as_bytes()).await?;
+        req.extend_from_slice(CRLF.as_bytes());
 
         // Write body and trailers
         let empty_body = Bytes::new();
         if use_chunked {
             let body = request.body.as_ref().unwrap_or(&empty_body);
-            Self::write_chunked_body(stream, body, trailers.as_slice()).await?;
+            let chunked_body = Self::build_chunked_body(body, trailers.as_slice());
+            req.extend_from_slice(&chunked_body);
         } else if let Some(body) = request.body.as_ref() {
-            Self::write_to_stream(stream, body).await?;
+            req.extend_from_slice(body);
         }
+
+        Self::write_to_stream(stream, &req).await?;
 
         Ok(())
     }
@@ -130,37 +137,35 @@ impl H1Client {
         Ok(())
     }
 
-    async fn write_chunked_body(
-        stream: &mut TransportStream,
-        body: &Bytes,
-        trailers: &[Header],
-    ) -> Result<(), ProtocolError> {
+    fn build_chunked_body(body: &Bytes, trailers: &[Header]) -> Vec<u8> {
+        let mut chunked_body = Vec::new();
+
         if !body.is_empty() {
             // Write chunk size in hex
             let chunk_size = format!("{:x}{}", body.len(), CRLF);
-            Self::write_to_stream(stream, chunk_size.as_bytes()).await?;
+            chunked_body.extend_from_slice(chunk_size.as_bytes());
 
             // Write chunk data
-            Self::write_to_stream(stream, body).await?;
+            chunked_body.extend_from_slice(body);
 
             // Write trailing CRLF
-            Self::write_to_stream(stream, CRLF.as_bytes()).await?;
+            chunked_body.extend_from_slice(CRLF.as_bytes());
         }
 
         // Write final chunk (size 0)
         let final_chunk = format!("0{}", CRLF);
-        Self::write_to_stream(stream, final_chunk.as_bytes()).await?;
+        chunked_body.extend_from_slice(final_chunk.as_bytes());
 
         // Write trailers
         for trailer in trailers {
             let trailer_line = format!("{}{}", trailer.to_string(), CRLF);
-            Self::write_to_stream(stream, trailer_line.as_bytes()).await?;
+            chunked_body.extend_from_slice(trailer_line.as_bytes());
         }
 
         // Final CRLF to end the message
-        Self::write_to_stream(stream, CRLF.as_bytes()).await?;
+        chunked_body.extend_from_slice(CRLF.as_bytes());
 
-        Ok(())
+        chunked_body
     }
 
     async fn read_response(
