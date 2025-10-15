@@ -5,10 +5,11 @@ use crate::types::{
 };
 use crate::utils::{
     ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers,
-    with_timeout_result, HTTP_VERSION_3_0,
+    with_timeout_result, HTTP_VERSION_3_0, parse_target,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
+use url::Url;
 
 pub struct H3Client {
     timeouts: ClientTimeouts,
@@ -45,16 +46,17 @@ impl H3Client {
         &self,
         connection: &mut H3Connection,
         request: &Request,
+        timeouts: &ClientTimeouts,
     ) -> Result<u32, ProtocolError> {
         let (stream_id, mut send_stream) =
-            with_timeout_result(self.timeouts.connect, connection.create_request_stream()).await?;
+            with_timeout_result(timeouts.connect, connection.create_request_stream()).await?;
 
         let pseudo_headers = prepare_pseudo_headers(request, &request.target)?;
         let mut headers = merge_headers(pseudo_headers, request);
         ensure_user_agent(&mut headers);
 
         let header_block = with_timeout_result(
-            self.timeouts.write,
+            timeouts.write,
             connection.encode_headers(stream_id, &headers),
         )
         .await?;
@@ -63,7 +65,7 @@ impl H3Client {
         let serialized_headers = headers_frame.serialize().map_err(|e| {
             ProtocolError::H3MessageError(format!("Failed to serialize headers: {}", e))
         })?;
-        with_timeout_result(self.timeouts.write, async {
+        with_timeout_result(timeouts.write, async {
             send_stream
                 .write_all(&serialized_headers)
                 .await
@@ -82,7 +84,7 @@ impl H3Client {
                 let serialized_data = data_frame.serialize().map_err(|e| {
                     ProtocolError::H3MessageError(format!("Failed to serialize data: {}", e))
                 })?;
-                with_timeout_result(self.timeouts.write, async {
+                with_timeout_result(timeouts.write, async {
                     send_stream.write_all(&serialized_data).await.map_err(|e| {
                         ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(format!(
                             "Failed to send data: {}",
@@ -98,7 +100,7 @@ impl H3Client {
             if !trailers.is_empty() {
                 let normalized_trailers = normalize_headers(trailers);
                 let trailer_block = with_timeout_result(
-                    self.timeouts.write,
+                    timeouts.write,
                     connection.encode_headers(stream_id, &normalized_trailers),
                 )
                 .await?;
@@ -107,7 +109,7 @@ impl H3Client {
                 let serialized_trailers = trailers_frame.serialize().map_err(|e| {
                     ProtocolError::H3MessageError(format!("Failed to serialize trailers: {}", e))
                 })?;
-                with_timeout_result(self.timeouts.write, async {
+                with_timeout_result(timeouts.write, async {
                     send_stream
                         .write_all(&serialized_trailers)
                         .await
@@ -121,7 +123,7 @@ impl H3Client {
             }
         }
 
-        with_timeout_result(self.timeouts.write, async {
+        with_timeout_result(timeouts.write, async {
             send_stream.finish().map_err(|e| {
                 ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(format!(
                     "Failed to finish stream: {}",
@@ -135,19 +137,53 @@ impl H3Client {
     }
 
     pub async fn send_request(&self, request: Request) -> Result<Response, ProtocolError> {
-        let mut connection = with_timeout_result(
-            self.timeouts.connect,
-            H3Connection::connect(&request.target),
-        )
-        .await?;
-        let stream_id = self.send_request_inner(&mut connection, &request).await?;
-        self.read_response(&mut connection, stream_id).await
+        self.send_request_internal(request, 0).await
+    }
+
+    fn send_request_internal<'a>(&'a self, mut request: Request, redirect_count: u32) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ProtocolError>> + 'a>> {
+        Box::pin(async move {
+            const MAX_REDIRECTS: u32 = 30;
+
+            if redirect_count > MAX_REDIRECTS {
+                return Err(ProtocolError::RequestFailed("Too many redirects".to_string()));
+            }
+
+            let timeouts = request.effective_timeouts(&self.timeouts);
+            let mut connection = with_timeout_result(timeouts.connect, H3Connection::connect(&request.target)).await?;
+            let stream_id = self.send_request_inner(&mut connection, &request, &timeouts).await?;
+            let response = self.read_response(&mut connection, stream_id, &timeouts, request.stream).await?;
+
+            // Handle redirects if enabled
+            if request.allow_redirects && Self::is_redirect_status(response.status) {
+                if let Some(location) = Self::get_location_header(&response.headers) {
+                    if let Ok(redirect_url) = Self::resolve_redirect_url(&request.target.url, &location) {
+                        let new_target = parse_target(redirect_url.as_str())?;
+                        request.target = new_target;
+
+                        // For 303 responses or GET/HEAD methods on 301/302, change method to GET
+                        if response.status == 303 ||
+                           ((response.status == 301 || response.status == 302) &&
+                            (request.method == "GET" || request.method == "HEAD")) {
+                            request.method = "GET".to_string();
+                            request.body = None;
+                            request.json = None;
+                        }
+
+                        return self.send_request_internal(request, redirect_count + 1).await;
+                    }
+                }
+            }
+
+            Ok(response)
+        })
     }
 
     async fn read_response(
         &self,
         connection: &mut H3Connection,
         stream_id: u32,
+        timeouts: &ClientTimeouts,
+        stream_response: bool,
     ) -> Result<Response, ProtocolError> {
         let mut status: Option<u16> = None;
         let mut headers = Vec::new();
@@ -157,10 +193,12 @@ impl H3Client {
         let protocol_version = HTTP_VERSION_3_0.to_string();
 
         loop {
-            with_timeout_result(self.timeouts.read, connection.poll_control()).await?;
-            let frame_opt =
-                with_timeout_result(self.timeouts.read, connection.read_request_frame(stream_id))
-                    .await?;
+            with_timeout_result(timeouts.read, connection.poll_control()).await?;
+            let frame_opt = with_timeout_result(
+                timeouts.read,
+                connection.read_request_frame(stream_id),
+            )
+            .await?;
 
             let frame = match frame_opt {
                 Some(frame) => frame,
@@ -170,7 +208,7 @@ impl H3Client {
             match &frame.frame_type {
                 FrameType::H3(FrameTypeH3::Headers) => {
                     let decoded_headers = with_timeout_result(
-                        self.timeouts.read,
+                        timeouts.read,
                         connection.decode_headers(stream_id, &frame.payload),
                     )
                     .await?;
@@ -202,7 +240,8 @@ impl H3Client {
                     } else {
                         if let Some(code) = status_code {
                             if code < 200 {
-                                connection.handle_frame(&frame).await?;
+                                with_timeout_result(timeouts.read, connection.handle_frame(&frame))
+                                    .await?;
                                 continue;
                             }
                         }
@@ -215,16 +254,19 @@ impl H3Client {
                         );
                     }
 
-                    connection.handle_frame(&frame).await?;
+                    with_timeout_result(timeouts.read, connection.handle_frame(&frame)).await?;
                 }
                 FrameType::H3(FrameTypeH3::Data) => {
                     body.extend_from_slice(&frame.payload);
-                    with_timeout_result(self.timeouts.read, connection.handle_frame(&frame))
-                        .await?;
+                    with_timeout_result(timeouts.read, connection.handle_frame(&frame)).await?;
+
+                    // For streaming, return after reading the first data frame
+                    if stream_response && !body.is_empty() {
+                        break;
+                    }
                 }
                 _ => {
-                    with_timeout_result(self.timeouts.read, connection.handle_frame(&frame))
-                        .await?;
+                    with_timeout_result(timeouts.read, connection.handle_frame(&frame)).await?;
                 }
             }
         }
@@ -245,6 +287,25 @@ impl H3Client {
             body: Bytes::from(body),
             trailers,
         })
+    }
+
+    fn is_redirect_status(status: u16) -> bool {
+        matches!(status, 300..=399)
+    }
+
+    fn get_location_header(headers: &[Header]) -> Option<String> {
+        headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("location"))
+            .and_then(|h| h.value.clone())
+    }
+
+    fn resolve_redirect_url(base_url: &Url, location: &str) -> Result<Url, url::ParseError> {
+        if location.starts_with("http://") || location.starts_with("https://") {
+            Url::parse(location)
+        } else {
+            base_url.join(location)
+        }
     }
 }
 

@@ -16,6 +16,11 @@ pub const TRANSFER_ENCODING_HEADER: &str = "transfer-encoding";
 pub const USER_AGENT_HEADER: &str = "user-agent";
 pub const CHUNKED_ENCODING: &str = "chunked";
 
+// Common header names as constants to avoid allocations
+pub const CONTENT_TYPE_HEADER: &str = "content-type";
+pub const COOKIE_HEADER: &str = "cookie";
+pub const APPLICATION_JSON: &str = "application/json";
+
 pub fn parse_target(target: &str) -> Result<Target, ProtocolError> {
     let url = Url::parse(target)
         .map_err(|e| ProtocolError::InvalidTarget(format!("{} ({})", target, e)))?;

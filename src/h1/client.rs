@@ -1,12 +1,13 @@
 use crate::stream::{create_stream, TransportStream};
-use crate::types::{ClientTimeouts, Header, Protocol, ProtocolError, Request, Response, Target};
+use crate::types::{ClientTimeouts, Header, Protocol, ProtocolError, Request, Response};
 use crate::utils::{
     ensure_user_agent, with_timeout_result, CHUNKED_ENCODING, CONTENT_LENGTH_HEADER, CRLF,
-    HOST_HEADER, HTTP_VERSION_1_1, TRANSFER_ENCODING_HEADER,
+    HOST_HEADER, HTTP_VERSION_1_1, TRANSFER_ENCODING_HEADER, parse_target,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use url::Url;
 
 pub struct H1Client {
     timeouts: ClientTimeouts,
@@ -26,12 +27,54 @@ impl H1Client {
     }
 
     pub async fn send_request(&self, request: Request) -> Result<Response, ProtocolError> {
-        let mut stream = self.open_stream(&request.target).await?;
-        self.write_request(&mut stream, &request).await?;
-        self.read_response(&mut stream, &request.method).await
+        self.send_request_internal(request, 0).await
     }
 
-    async fn open_stream(&self, target: &Target) -> Result<TransportStream, ProtocolError> {
+    fn send_request_internal<'a>(&'a self, mut request: Request, redirect_count: u32) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ProtocolError>> + 'a>> {
+        Box::pin(async move {
+            const MAX_REDIRECTS: u32 = 30;
+
+            if redirect_count > MAX_REDIRECTS {
+                return Err(ProtocolError::RequestFailed("Too many redirects".to_string()));
+            }
+
+            let timeouts = request.effective_timeouts(&self.timeouts);
+            let mut stream = self.open_stream(&request, &timeouts).await?;
+            self.write_request(&mut stream, &request, &timeouts).await?;
+
+            let response = self.read_response(&mut stream, &request.method, &timeouts, request.stream).await?;
+
+            // Handle redirects if enabled
+            if request.allow_redirects && Self::is_redirect_status(response.status) {
+                if let Some(location) = Self::get_location_header(&response.headers) {
+                    if let Ok(redirect_url) = Self::resolve_redirect_url(&request.target.url, &location) {
+                        let new_target = parse_target(redirect_url.as_str())?;
+                        request.target = new_target;
+
+                        // For 303 responses or GET/HEAD methods on 301/302, change method to GET
+                        if response.status == 303 ||
+                           ((response.status == 301 || response.status == 302) &&
+                            (request.method == "GET" || request.method == "HEAD")) {
+                            request.method = "GET".to_string();
+                            request.body = None;
+                            request.json = None;
+                        }
+
+                        return self.send_request_internal(request, redirect_count + 1).await;
+                    }
+                }
+            }
+
+            Ok(response)
+        })
+    }
+
+    async fn open_stream(
+        &self,
+        request: &Request,
+        timeouts: &ClientTimeouts,
+    ) -> Result<TransportStream, ProtocolError> {
+        let target = &request.target;
         let host = target
             .host()
             .ok_or_else(|| ProtocolError::InvalidTarget("Target missing host".to_string()))?;
@@ -40,9 +83,36 @@ impl H1Client {
             .ok_or_else(|| ProtocolError::InvalidTarget("Target missing port".to_string()))?;
 
         let scheme = target.scheme().to_string();
-        let host_owned = host.to_string();
-        let connect_timeout = self.timeouts.connect;
+        let connect_timeout = timeouts.connect;
 
+        // Handle proxy if configured
+        if let Some(proxy_settings) = &request.proxies {
+            let proxy_url = if target.scheme() == "https" {
+                proxy_settings.https.as_ref().or(proxy_settings.http.as_ref())
+            } else {
+                proxy_settings.http.as_ref()
+            };
+
+            if let Some(proxy) = proxy_url {
+                let proxy_host = proxy.host_str()
+                    .ok_or_else(|| ProtocolError::InvalidTarget("Proxy missing host".to_string()))?;
+                let proxy_port = proxy.port_or_known_default()
+                    .ok_or_else(|| ProtocolError::InvalidTarget("Proxy missing port".to_string()))?;
+
+                let proxy_scheme = if scheme == "https" { "https" } else { "http" };
+                let proxy_host_owned = proxy_host.to_string();
+
+                return with_timeout_result(connect_timeout, async move {
+                    create_stream(proxy_scheme, &proxy_host_owned, proxy_port, connect_timeout)
+                        .await
+                        .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))
+                })
+                .await;
+            }
+        }
+
+        // Direct connection
+        let host_owned = host.to_string();
         with_timeout_result(connect_timeout, async move {
             create_stream(&scheme, &host_owned, port, connect_timeout)
                 .await
@@ -55,12 +125,13 @@ impl H1Client {
         &self,
         stream: &mut TransportStream,
         request: &Request,
+        timeouts: &ClientTimeouts,
     ) -> Result<(), ProtocolError> {
         let mut req = Vec::new();
-        let path = request.target.path();
+        let path = request.path();
 
         let empty_trailers = Vec::new();
-        let mut headers = request.headers.clone();
+        let mut headers = request.effective_headers();
         let trailers = request.trailers.as_ref().unwrap_or(&empty_trailers);
         ensure_user_agent(&mut headers);
 
@@ -121,15 +192,15 @@ impl H1Client {
             req.extend_from_slice(body);
         }
 
-        self.write_to_stream(stream, &req).await
+        self.write_to_stream(stream, &req, timeouts.write).await
     }
 
     async fn write_to_stream(
         &self,
         stream: &mut TransportStream,
         data: &[u8],
+        write_timeout: Option<std::time::Duration>,
     ) -> Result<(), ProtocolError> {
-        let write_timeout = self.timeouts.write;
         with_timeout_result(write_timeout, async {
             match stream {
                 TransportStream::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io),
@@ -143,15 +214,19 @@ impl H1Client {
         &self,
         stream: &mut TransportStream,
         method: &str,
+        timeouts: &ClientTimeouts,
+        stream_response: bool,
     ) -> Result<Response, ProtocolError> {
         match stream {
             TransportStream::Tcp(tcp) => {
                 let mut reader = BufReader::new(tcp);
-                self.read_response_from_reader(&mut reader, method).await
+                self.read_response_from_reader(&mut reader, method, timeouts, stream_response)
+                    .await
             }
             TransportStream::Tls(tls) => {
                 let mut reader = BufReader::new(tls);
-                self.read_response_from_reader(&mut reader, method).await
+                self.read_response_from_reader(&mut reader, method, timeouts, stream_response)
+                    .await
             }
         }
     }
@@ -160,10 +235,12 @@ impl H1Client {
         &self,
         reader: &mut R,
         method: &str,
+        timeouts: &ClientTimeouts,
+        stream_response: bool,
     ) -> Result<Response, ProtocolError> {
         loop {
             let mut status_line = String::new();
-            let bytes = with_timeout_result(self.timeouts.read, async {
+            let bytes = with_timeout_result(timeouts.read, async {
                 reader
                     .read_line(&mut status_line)
                     .await
@@ -182,7 +259,7 @@ impl H1Client {
             }
 
             let (status, protocol_version) = Self::parse_status_line(&status_line)?;
-            let headers = self.read_header_block(reader).await?;
+            let headers = self.read_header_block(reader, timeouts).await?;
 
             if status < 200 {
                 // 101 Switching Protocols is a final response (RFC 7231 §6.2.2)
@@ -191,7 +268,8 @@ impl H1Client {
                 }
             }
 
-            let (body, trailers) = self.read_body(reader, &headers, method, status).await?;
+            let (body, trailers) =
+                self.read_body(reader, &headers, method, status, timeouts, stream_response).await?;
 
             return Ok(Response {
                 status,
@@ -210,11 +288,12 @@ impl H1Client {
     async fn read_header_block<R: AsyncBufRead + Unpin>(
         &self,
         reader: &mut R,
+        timeouts: &ClientTimeouts,
     ) -> Result<Vec<Header>, ProtocolError> {
         let mut headers = Vec::new();
         loop {
             let mut line = String::new();
-            with_timeout_result(self.timeouts.read, async {
+            with_timeout_result(timeouts.read, async {
                 reader.read_line(&mut line).await.map_err(ProtocolError::Io)
             })
             .await?;
@@ -236,6 +315,8 @@ impl H1Client {
         headers: &[Header],
         method: &str,
         status: u16,
+        timeouts: &ClientTimeouts,
+        stream_response: bool,
     ) -> Result<(Bytes, Vec<Header>), ProtocolError> {
         if !Self::response_has_body(method, status) {
             return Ok((Bytes::new(), Vec::new()));
@@ -249,7 +330,7 @@ impl H1Client {
         });
 
         if is_chunked {
-            self.read_chunked_body(reader).await
+            self.read_chunked_body(reader, timeouts, stream_response).await
         } else {
             let content_length = headers
                 .iter()
@@ -257,9 +338,22 @@ impl H1Client {
                 .and_then(|h| h.value.as_ref())
                 .and_then(|v| v.parse::<usize>().ok());
 
-            if let Some(length) = content_length {
+            if stream_response {
+                // For streaming, read only a small chunk or available data
+                const STREAM_CHUNK_SIZE: usize = 8192;
+                let read_size = content_length.map(|len| len.min(STREAM_CHUNK_SIZE)).unwrap_or(STREAM_CHUNK_SIZE);
+                let mut body = vec![0u8; read_size];
+
+                let bytes_read = with_timeout_result(timeouts.read, async {
+                    reader.read(&mut body).await.map_err(ProtocolError::Io)
+                })
+                .await?;
+
+                body.truncate(bytes_read);
+                Ok((Bytes::from(body), Vec::new()))
+            } else if let Some(length) = content_length {
                 let mut body = vec![0u8; length];
-                with_timeout_result(self.timeouts.read, async {
+                with_timeout_result(timeouts.read, async {
                     reader
                         .read_exact(&mut body)
                         .await
@@ -269,7 +363,7 @@ impl H1Client {
                 Ok((Bytes::from(body), Vec::new()))
             } else {
                 let mut body = Vec::new();
-                with_timeout_result(self.timeouts.read, async {
+                with_timeout_result(timeouts.read, async {
                     reader
                         .read_to_end(&mut body)
                         .await
@@ -284,13 +378,15 @@ impl H1Client {
     async fn read_chunked_body<R: AsyncBufRead + Unpin>(
         &self,
         reader: &mut R,
+        timeouts: &ClientTimeouts,
+        stream_response: bool,
     ) -> Result<(Bytes, Vec<Header>), ProtocolError> {
         let mut body = Vec::new();
         let mut trailers = Vec::new();
 
         loop {
             let mut size_line = String::new();
-            with_timeout_result(self.timeouts.read, async {
+            with_timeout_result(timeouts.read, async {
                 reader
                     .read_line(&mut size_line)
                     .await
@@ -305,7 +401,7 @@ impl H1Client {
             if chunk_size == 0 {
                 loop {
                     let mut line = String::new();
-                    with_timeout_result(self.timeouts.read, async {
+                    with_timeout_result(timeouts.read, async {
                         reader.read_line(&mut line).await.map_err(ProtocolError::Io)
                     })
                     .await?;
@@ -322,7 +418,7 @@ impl H1Client {
             }
 
             let mut chunk = vec![0u8; chunk_size];
-            with_timeout_result(self.timeouts.read, async {
+            with_timeout_result(timeouts.read, async {
                 reader
                     .read_exact(&mut chunk)
                     .await
@@ -332,13 +428,18 @@ impl H1Client {
             body.extend_from_slice(&chunk);
 
             let mut crlf = [0u8; 2];
-            with_timeout_result(self.timeouts.read, async {
+            with_timeout_result(timeouts.read, async {
                 reader
                     .read_exact(&mut crlf)
                     .await
                     .map_err(ProtocolError::Io)
             })
             .await?;
+
+            // For streaming, return after reading the first chunk
+            if stream_response && !body.is_empty() {
+                break;
+            }
         }
 
         Ok((Bytes::from(body), trailers))
@@ -393,6 +494,25 @@ impl H1Client {
             .map_err(|_| ProtocolError::InvalidResponse("Invalid status code".to_string()))?;
 
         Ok((status_code, protocol_version))
+    }
+
+    fn is_redirect_status(status: u16) -> bool {
+        matches!(status, 300..=399)
+    }
+
+    fn get_location_header(headers: &[Header]) -> Option<String> {
+        headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("location"))
+            .and_then(|h| h.value.clone())
+    }
+
+    fn resolve_redirect_url(base_url: &Url, location: &str) -> Result<Url, url::ParseError> {
+        if location.starts_with("http://") || location.starts_with("https://") {
+            Url::parse(location)
+        } else {
+            base_url.join(location)
+        }
     }
 }
 

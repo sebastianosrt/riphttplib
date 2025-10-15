@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use bytes::Bytes;
+use serde_json::Value;
 use std::collections::HashSet;
 use std::time::Duration;
-use url::Url;
+use url::{form_urlencoded, Url};
 
 use crate::utils::parse_target;
 
@@ -73,6 +74,12 @@ impl Target {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ProxySettings {
+    pub http: Option<Url>,
+    pub https: Option<Url>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Header {
     pub name: String,
@@ -128,6 +135,13 @@ pub struct Request {
     pub headers: Vec<Header>,
     pub body: Option<Bytes>,
     pub trailers: Option<Vec<Header>>,
+    pub params: Vec<(String, String)>,
+    pub json: Option<Value>,
+    pub cookies: Vec<(String, String)>,
+    pub timeout: Option<ClientTimeouts>,
+    pub allow_redirects: bool,
+    pub proxies: Option<ProxySettings>,
+    pub stream: bool,
 }
 
 impl Request {
@@ -138,6 +152,13 @@ impl Request {
             headers: Vec::new(),
             body: None,
             trailers: None,
+            params: Vec::new(),
+            json: None,
+            cookies: Vec::new(),
+            timeout: None,
+            allow_redirects: true,
+            proxies: None,
+            stream: false,
         })
     }
 
@@ -148,6 +169,13 @@ impl Request {
             headers: Vec::new(),
             body: None,
             trailers: None,
+            params: Vec::new(),
+            json: None,
+            cookies: Vec::new(),
+            timeout: None,
+            allow_redirects: true,
+            proxies: None,
+            stream: false,
         }
     }
 
@@ -163,17 +191,193 @@ impl Request {
 
     pub fn with_body<B: Into<Bytes>>(mut self, body: B) -> Self {
         self.body = Some(body.into());
+        self.json = None;
         self
     }
 
     pub fn with_optional_body<B: Into<Bytes>>(mut self, body: Option<B>) -> Self {
         self.body = body.map(Into::into);
+        if self.body.is_some() {
+            self.json = None;
+        }
         self
     }
 
     pub fn with_trailers(mut self, trailers: Option<Vec<Header>>) -> Self {
         self.trailers = trailers;
         self
+    }
+
+    pub fn with_params<I, K, V>(mut self, params: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.params = params
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect();
+        self
+    }
+
+    pub fn with_json(mut self, json: Value) -> Self {
+        let serialized =
+            serde_json::to_vec(&json).expect("serializing JSON body into bytes must succeed");
+        self.body = Some(Bytes::from(serialized));
+        self.json = Some(json);
+        self
+    }
+
+    pub fn with_cookies<I, K, V>(mut self, cookies: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.cookies = cookies
+            .into_iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect();
+        self
+    }
+
+    pub fn with_timeout(mut self, timeouts: ClientTimeouts) -> Self {
+        self.timeout = Some(timeouts);
+        self
+    }
+
+    pub fn with_allow_redirects(mut self, allow: bool) -> Self {
+        self.allow_redirects = allow;
+        self
+    }
+
+    pub fn with_proxies(mut self, proxies: ProxySettings) -> Self {
+        self.proxies = Some(proxies);
+        self
+    }
+
+    pub fn without_proxies(mut self) -> Self {
+        self.proxies = None;
+        self
+    }
+
+    pub fn with_stream(mut self, stream: bool) -> Self {
+        self.stream = stream;
+        self
+    }
+
+    pub fn path(&self) -> String {
+        let path = self.target.url.path();
+        let path = if path.is_empty() { "/" } else { path };
+
+        let existing_query = self.target.url.query();
+
+        if self.params.is_empty() {
+            // Fast path when no params
+            match existing_query {
+                Some(query) => {
+                    let mut result = String::with_capacity(path.len() + query.len() + 1);
+                    result.push_str(path);
+                    result.push('?');
+                    result.push_str(query);
+                    result
+                }
+                None => path.to_string(),
+            }
+        } else {
+            // Estimate capacity to reduce allocations
+            let estimated_param_size: usize = self.params.iter()
+                .map(|(k, v)| k.len() + v.len() + 3) // +3 for =, &, and URL encoding overhead
+                .sum();
+
+            let total_capacity = path.len() +
+                existing_query.map(|q| q.len() + 1).unwrap_or(0) +
+                estimated_param_size + 10; // +10 buffer for URL encoding
+
+            let mut serializer = form_urlencoded::Serializer::new(String::with_capacity(estimated_param_size));
+            for (key, value) in &self.params {
+                serializer.append_pair(key, value);
+            }
+            let new_query = serializer.finish();
+
+            let mut result = String::with_capacity(total_capacity);
+            result.push_str(path);
+            result.push('?');
+
+            if let Some(existing) = existing_query {
+                result.push_str(existing);
+                if !new_query.is_empty() {
+                    result.push('&');
+                    result.push_str(&new_query);
+                }
+            } else {
+                result.push_str(&new_query);
+            }
+
+            result
+        }
+    }
+
+    pub fn effective_headers(&self) -> Vec<Header> {
+        // Pre-calculate capacity to avoid reallocations
+        let additional_headers =
+            (if self.json.is_some() && !Self::has_header_case_insensitive(&self.headers, "content-type") { 1 } else { 0 }) +
+            (if !self.cookies.is_empty() && !Self::has_header_case_insensitive(&self.headers, "cookie") { 1 } else { 0 });
+
+        let mut headers = Vec::with_capacity(self.headers.len() + additional_headers);
+        headers.extend_from_slice(&self.headers);
+
+        if self.json.is_some() && !Self::has_header_case_insensitive(&headers, crate::utils::CONTENT_TYPE_HEADER) {
+            headers.push(Header::new(
+                crate::utils::CONTENT_TYPE_HEADER.to_string(),
+                crate::utils::APPLICATION_JSON.to_string(),
+            ));
+        }
+
+        if let Some(cookie_value) = self.cookie_header_value() {
+            if !Self::has_header_case_insensitive(&headers, crate::utils::COOKIE_HEADER) {
+                headers.push(Header::new(crate::utils::COOKIE_HEADER.to_string(), cookie_value));
+            }
+        }
+
+        headers
+    }
+
+    pub fn effective_timeouts(&self, fallback: &ClientTimeouts) -> ClientTimeouts {
+        self.timeout.clone().unwrap_or_else(|| fallback.clone())
+    }
+
+    fn cookie_header_value(&self) -> Option<String> {
+        if self.cookies.is_empty() {
+            None
+        } else {
+            // Pre-calculate capacity to avoid reallocations
+            let estimated_size: usize = self.cookies.iter()
+                .map(|(name, value)| name.len() + value.len() + 3) // +3 for "=", "; "
+                .sum();
+
+            let mut result = String::with_capacity(estimated_size);
+            let mut first = true;
+
+            for (name, value) in &self.cookies {
+                if !first {
+                    result.push_str("; ");
+                }
+                result.push_str(name);
+                result.push('=');
+                result.push_str(value);
+                first = false;
+            }
+
+            Some(result)
+        }
+    }
+
+    fn has_header_case_insensitive(headers: &[Header], name: &str) -> bool {
+        headers
+            .iter()
+            .any(|header| header.name.eq_ignore_ascii_case(name))
     }
 }
 
@@ -182,7 +386,7 @@ pub trait Protocol {
     async fn send(&self, request: Request) -> Result<Response, ProtocolError>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClientTimeouts {
     pub connect: Option<Duration>,
     pub read: Option<Duration>,

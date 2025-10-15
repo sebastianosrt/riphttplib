@@ -2,9 +2,10 @@ use crate::h2::connection::{H2Connection, StreamEvent};
 use crate::types::{
     ClientTimeouts, H2StreamErrorKind, Header, Protocol, ProtocolError, Request, Response,
 };
-use crate::utils::{ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers};
+use crate::utils::{ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers, parse_target};
 use async_trait::async_trait;
 use bytes::Bytes;
+use url::Url;
 
 pub struct H2Client {
     timeouts: ClientTimeouts,
@@ -99,15 +100,52 @@ impl H2Client {
     }
 
     pub async fn send_request(&self, request: Request) -> Result<Response, ProtocolError> {
-        let mut connection = H2Connection::connect(&request.target, &self.timeouts).await?;
-        let stream_id = self.send_request_inner(&mut connection, &request).await?;
-        self.read_response(&mut connection, stream_id).await
+        self.send_request_internal(request, 0).await
+    }
+
+    fn send_request_internal<'a>(&'a self, mut request: Request, redirect_count: u32) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ProtocolError>> + 'a>> {
+        Box::pin(async move {
+            const MAX_REDIRECTS: u32 = 30;
+
+            if redirect_count > MAX_REDIRECTS {
+                return Err(ProtocolError::RequestFailed("Too many redirects".to_string()));
+            }
+
+            let timeouts = request.effective_timeouts(&self.timeouts);
+            let mut connection = H2Connection::connect(&request.target, &timeouts).await?;
+            let stream_id = self.send_request_inner(&mut connection, &request).await?;
+            let response = self.read_response(&mut connection, stream_id, request.stream).await?;
+
+            // Handle redirects if enabled
+            if request.allow_redirects && Self::is_redirect_status(response.status) {
+                if let Some(location) = Self::get_location_header(&response.headers) {
+                    if let Ok(redirect_url) = Self::resolve_redirect_url(&request.target.url, &location) {
+                        let new_target = parse_target(redirect_url.as_str())?;
+                        request.target = new_target;
+
+                        // For 303 responses or GET/HEAD methods on 301/302, change method to GET
+                        if response.status == 303 ||
+                           ((response.status == 301 || response.status == 302) &&
+                            (request.method == "GET" || request.method == "HEAD")) {
+                            request.method = "GET".to_string();
+                            request.body = None;
+                            request.json = None;
+                        }
+
+                        return self.send_request_internal(request, redirect_count + 1).await;
+                    }
+                }
+            }
+
+            Ok(response)
+        })
     }
 
     async fn read_response(
         &self,
         connection: &mut H2Connection,
         stream_id: u32,
+        stream_response: bool,
     ) -> Result<Response, ProtocolError> {
         let protocol_version = "HTTP/2.0".to_string();
         let mut status: Option<u16> = None;
@@ -173,6 +211,12 @@ impl H2Client {
                     end_stream,
                 } => {
                     body.extend_from_slice(&payload);
+
+                    // For streaming, return after reading the first data frame
+                    if stream_response && !body.is_empty() {
+                        break;
+                    }
+
                     if end_stream {
                         break;
                     }
@@ -196,6 +240,25 @@ impl H2Client {
             body: Bytes::from(body),
             trailers,
         })
+    }
+
+    fn is_redirect_status(status: u16) -> bool {
+        matches!(status, 300..=399)
+    }
+
+    fn get_location_header(headers: &[Header]) -> Option<String> {
+        headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("location"))
+            .and_then(|h| h.value.clone())
+    }
+
+    fn resolve_redirect_url(base_url: &Url, location: &str) -> Result<Url, url::ParseError> {
+        if location.starts_with("http://") || location.starts_with("https://") {
+            Url::parse(location)
+        } else {
+            base_url.join(location)
+        }
     }
 }
 
