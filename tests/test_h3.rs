@@ -9,8 +9,8 @@ async fn test_http3_google() {
     let client = H3Client::new();
     let target = parse_target("https://www.google.com/").expect("valid target");
 
-    let request = Request::new("GET");
-    match client.send_request(&target, request).await {
+    let request = Request::with_target(target, "GET");
+    match client.send_request(request).await {
         Ok(response) => {
             println!("Status: {}", response.status);
             for header in &response.headers {

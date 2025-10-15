@@ -1,38 +1,52 @@
 use crate::h2::connection::{H2Connection, StreamEvent};
-use crate::types::{H2StreamErrorKind, Header, Protocol, ProtocolError, Request, Response, Target};
-use crate::utils::{merge_headers, normalize_headers, prepare_pseudo_headers};
+use crate::types::{
+    ClientTimeouts, H2StreamErrorKind, Header, Protocol, ProtocolError, Request, Response,
+};
+use crate::utils::{ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers};
 use async_trait::async_trait;
 use bytes::Bytes;
 
-pub struct H2Client;
+pub struct H2Client {
+    timeouts: ClientTimeouts,
+}
 
 impl H2Client {
     pub fn new() -> Self {
-        Self
+        Self::with_timeouts(ClientTimeouts::default())
+    }
+
+    pub fn with_timeouts(timeouts: ClientTimeouts) -> Self {
+        Self { timeouts }
+    }
+
+    pub fn timeouts(&self) -> &ClientTimeouts {
+        &self.timeouts
     }
 
     pub fn build_request(
+        target: &str,
         method: impl Into<String>,
         headers: Vec<Header>,
         body: Option<Bytes>,
         trailers: Option<Vec<Header>>,
-    ) -> Request {
-        Request::new(method)
-            .with_headers(headers)
-            .with_optional_body(body)
-            .with_trailers(trailers)
+    ) -> Result<Request, ProtocolError> {
+        Request::new(target, method).map(|r| {
+            r.with_headers(headers)
+                .with_optional_body(body)
+                .with_trailers(trailers)
+        })
     }
 
     async fn send_request_inner(
         &self,
         connection: &mut H2Connection,
-        target: &Target,
         request: &Request,
     ) -> Result<u32, ProtocolError> {
         let stream_id = connection.create_stream().await?;
 
-        let pseudo_headers = prepare_pseudo_headers(request, target)?;
-        let headers = merge_headers(pseudo_headers, request);
+        let pseudo_headers = prepare_pseudo_headers(request, &request.target)?;
+        let mut headers = merge_headers(pseudo_headers, request);
+        ensure_user_agent(&mut headers);
 
         let has_body = request.body.as_ref().map_or(false, |body| !body.is_empty());
         let has_trailers = request
@@ -84,15 +98,9 @@ impl H2Client {
         Ok(stream_id)
     }
 
-    pub async fn send_request(
-        &self,
-        target: &Target,
-        request: Request,
-    ) -> Result<Response, ProtocolError> {
-        let mut connection = H2Connection::connect(target).await?;
-        let stream_id = self
-            .send_request_inner(&mut connection, target, &request)
-            .await?;
+    pub async fn send_request(&self, request: Request) -> Result<Response, ProtocolError> {
+        let mut connection = H2Connection::connect(&request.target, &self.timeouts).await?;
+        let stream_id = self.send_request_inner(&mut connection, &request).await?;
         self.read_response(&mut connection, stream_id).await
     }
 
@@ -193,7 +201,7 @@ impl H2Client {
 
 #[async_trait(?Send)]
 impl Protocol for H2Client {
-    async fn send(&self, target: &Target, request: Request) -> Result<Response, ProtocolError> {
-        self.send_request(target, request).await
+    async fn send(&self, request: Request) -> Result<Response, ProtocolError> {
+        self.send_request(request).await
     }
 }

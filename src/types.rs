@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::HashSet;
+use std::time::Duration;
 use url::Url;
+
+use crate::utils::parse_target;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HttpProtocol {
@@ -120,6 +123,7 @@ impl Response {
 
 #[derive(Debug, Clone)]
 pub struct Request {
+    pub target: Target,
     pub method: String,
     pub headers: Vec<Header>,
     pub body: Option<Bytes>,
@@ -127,8 +131,19 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn new(method: impl Into<String>) -> Self {
+    pub fn new(target: &str, method: impl Into<String>) -> Result<Self, ProtocolError> {
+        Ok(Self {
+            target: parse_target(target)?,
+            method: method.into(),
+            headers: Vec::new(),
+            body: None,
+            trailers: None,
+        })
+    }
+
+    pub fn with_target(target: Target, method: impl Into<String>) -> Self {
         Self {
+            target,
             method: method.into(),
             headers: Vec::new(),
             body: None,
@@ -164,7 +179,34 @@ impl Request {
 
 #[async_trait(?Send)]
 pub trait Protocol {
-    async fn send(&self, target: &Target, request: Request) -> Result<Response, ProtocolError>;
+    async fn send(&self, request: Request) -> Result<Response, ProtocolError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientTimeouts {
+    pub connect: Option<Duration>,
+    pub read: Option<Duration>,
+    pub write: Option<Duration>,
+}
+
+impl Default for ClientTimeouts {
+    fn default() -> Self {
+        Self {
+            connect: Some(Duration::from_secs(10)),
+            read: Some(Duration::from_secs(30)),
+            write: Some(Duration::from_secs(30)),
+        }
+    }
+}
+
+impl ClientTimeouts {
+    pub fn disabled() -> Self {
+        Self {
+            connect: None,
+            read: None,
+            write: None,
+        }
+    }
 }
 
 #[derive(Debug)]

@@ -3,7 +3,8 @@ use riphttplib::types::{Header, Request};
 
 #[test]
 fn request_builder_sets_fields() {
-    let request = Request::new("POST")
+    let request = Request::new("http://example.com/", "POST")
+        .expect("valid request")
         .with_header(Header::new(
             "content-type".to_string(),
             "application/json".to_string(),
@@ -22,6 +23,8 @@ fn request_builder_sets_fields() {
 
 #[test]
 fn request_with_optional_body_none() {
-    let request = Request::new("GET").with_optional_body::<Bytes>(None);
+    let request = Request::new("http://example.com/", "GET")
+        .expect("valid request")
+        .with_optional_body::<Bytes>(None);
     assert!(request.body.is_none());
 }

@@ -44,10 +44,9 @@ mod tests {
     #[tokio::test]
     async fn test_h1_get_request_basic() {
         let client = H1Client::new();
-        let target = create_test_target();
 
-        let request = Request::new("GET");
-        let result = client.send_request(&target, request).await;
+        let request = Request::new("http://httpbin.org/get", "GET").expect("valid request");
+        let result = client.send_request(request).await;
 
         match result {
             Ok(response) => {
@@ -80,8 +79,8 @@ mod tests {
             Header::new("X-Test-Header".to_string(), "test-value".to_string()),
         ];
 
-        let request = Request::new("GET").with_headers(headers);
-        let result = client.send_request(&target, request).await;
+        let request = Request::with_target(target, "GET").with_headers(headers);
+        let result = client.send_request(request).await;
 
         match result {
             Ok(response) => {
@@ -117,10 +116,10 @@ mod tests {
             "application/json".to_string(),
         )];
 
-        let request = Request::new("POST")
+        let request = Request::with_target(target, "POST")
             .with_headers(headers)
             .with_body(body.clone());
-        let result = client.send_request(&target, request).await;
+        let result = client.send_request(request).await;
 
         match result {
             Ok(response) => {
@@ -141,8 +140,8 @@ mod tests {
         let client = H1Client::new();
         let target = create_test_target();
 
-        let request = Request::new("HEAD");
-        let result = client.send_request(&target, request).await;
+        let request = Request::with_target(target, "HEAD");
+        let result = client.send_request(request).await;
 
         match result {
             Ok(response) => {
@@ -211,8 +210,8 @@ mod tests {
         let invalid_target =
             parse_target("http://invalid.nonexistent.domain.test/").expect("valid format target");
 
-        let request = Request::new("GET");
-        let result = client.send_request(&invalid_target, request).await;
+        let request = Request::with_target(invalid_target, "GET");
+        let result = client.send_request(request).await;
         assert!(result.is_err());
 
         match result.unwrap_err() {

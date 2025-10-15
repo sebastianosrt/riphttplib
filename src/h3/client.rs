@@ -1,57 +1,80 @@
 use crate::h3::connection::H3Connection;
 use crate::types::{
-    FrameType, FrameTypeH3, H3StreamErrorKind, Header, Protocol, ProtocolError, Request, Response,
-    Target,
+    ClientTimeouts, FrameType, FrameTypeH3, H3StreamErrorKind, Header, Protocol, ProtocolError,
+    Request, Response,
 };
-use crate::utils::{merge_headers, normalize_headers, prepare_pseudo_headers, HTTP_VERSION_3_0};
+use crate::utils::{
+    ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers,
+    with_timeout_result, HTTP_VERSION_3_0,
+};
 use async_trait::async_trait;
 use bytes::Bytes;
 
-pub struct H3Client;
+pub struct H3Client {
+    timeouts: ClientTimeouts,
+}
 
 impl H3Client {
     pub fn new() -> Self {
-        Self
+        Self::with_timeouts(ClientTimeouts::default())
+    }
+
+    pub fn with_timeouts(timeouts: ClientTimeouts) -> Self {
+        Self { timeouts }
+    }
+
+    pub fn timeouts(&self) -> &ClientTimeouts {
+        &self.timeouts
     }
 
     pub fn build_request(
+        target: &str,
         method: impl Into<String>,
         headers: Vec<Header>,
         body: Option<Bytes>,
         trailers: Option<Vec<Header>>,
-    ) -> Request {
-        Request::new(method)
-            .with_headers(headers)
-            .with_optional_body(body)
-            .with_trailers(trailers)
+    ) -> Result<Request, ProtocolError> {
+        Request::new(target, method).map(|r| {
+            r.with_headers(headers)
+                .with_optional_body(body)
+                .with_trailers(trailers)
+        })
     }
 
     async fn send_request_inner(
         &self,
         connection: &mut H3Connection,
-        target: &Target,
         request: &Request,
     ) -> Result<u32, ProtocolError> {
-        let (stream_id, mut send_stream) = connection.create_request_stream().await?;
+        let (stream_id, mut send_stream) =
+            with_timeout_result(self.timeouts.connect, connection.create_request_stream()).await?;
 
-        let pseudo_headers = prepare_pseudo_headers(request, target)?;
-        let headers = merge_headers(pseudo_headers, request);
+        let pseudo_headers = prepare_pseudo_headers(request, &request.target)?;
+        let mut headers = merge_headers(pseudo_headers, request);
+        ensure_user_agent(&mut headers);
 
-        let header_block = connection.encode_headers(stream_id, &headers).await?;
+        let header_block = with_timeout_result(
+            self.timeouts.write,
+            connection.encode_headers(stream_id, &headers),
+        )
+        .await?;
         let headers_frame =
             crate::types::FrameH3::new(FrameTypeH3::Headers, stream_id, header_block);
         let serialized_headers = headers_frame.serialize().map_err(|e| {
             ProtocolError::H3MessageError(format!("Failed to serialize headers: {}", e))
         })?;
-        send_stream
-            .write_all(&serialized_headers)
-            .await
-            .map_err(|e| {
-                ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(format!(
-                    "Failed to send headers: {}",
-                    e
-                )))
-            })?;
+        with_timeout_result(self.timeouts.write, async {
+            send_stream
+                .write_all(&serialized_headers)
+                .await
+                .map_err(|e| {
+                    ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(format!(
+                        "Failed to send headers: {}",
+                        e
+                    )))
+                })
+        })
+        .await?;
 
         if let Some(body) = request.body.as_ref() {
             if !body.is_empty() {
@@ -59,57 +82,65 @@ impl H3Client {
                 let serialized_data = data_frame.serialize().map_err(|e| {
                     ProtocolError::H3MessageError(format!("Failed to serialize data: {}", e))
                 })?;
-                send_stream.write_all(&serialized_data).await.map_err(|e| {
-                    ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(format!(
-                        "Failed to send data: {}",
-                        e
-                    )))
-                })?;
+                with_timeout_result(self.timeouts.write, async {
+                    send_stream.write_all(&serialized_data).await.map_err(|e| {
+                        ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(format!(
+                            "Failed to send data: {}",
+                            e
+                        )))
+                    })
+                })
+                .await?;
             }
         }
 
         if let Some(trailers) = request.trailers.as_ref() {
             if !trailers.is_empty() {
                 let normalized_trailers = normalize_headers(trailers);
-                let trailer_block = connection
-                    .encode_headers(stream_id, &normalized_trailers)
-                    .await?;
+                let trailer_block = with_timeout_result(
+                    self.timeouts.write,
+                    connection.encode_headers(stream_id, &normalized_trailers),
+                )
+                .await?;
                 let trailers_frame =
                     crate::types::FrameH3::new(FrameTypeH3::Headers, stream_id, trailer_block);
                 let serialized_trailers = trailers_frame.serialize().map_err(|e| {
                     ProtocolError::H3MessageError(format!("Failed to serialize trailers: {}", e))
                 })?;
-                send_stream
-                    .write_all(&serialized_trailers)
-                    .await
-                    .map_err(|e| {
-                        ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(format!(
-                            "Failed to send trailers: {}",
-                            e
-                        )))
-                    })?;
+                with_timeout_result(self.timeouts.write, async {
+                    send_stream
+                        .write_all(&serialized_trailers)
+                        .await
+                        .map_err(|e| {
+                            ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(
+                                format!("Failed to send trailers: {}", e),
+                            ))
+                        })
+                })
+                .await?;
             }
         }
 
-        send_stream.finish().map_err(|e| {
-            ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(format!(
-                "Failed to finish stream: {}",
-                e
-            )))
-        })?;
+        with_timeout_result(self.timeouts.write, async {
+            send_stream.finish().map_err(|e| {
+                ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(format!(
+                    "Failed to finish stream: {}",
+                    e
+                )))
+            })
+        })
+        .await?;
 
         Ok(stream_id)
     }
 
-    pub async fn send_request(
-        &self,
-        target: &Target,
-        request: Request,
-    ) -> Result<Response, ProtocolError> {
-        let mut connection = H3Connection::connect(target).await?;
-        let stream_id = self
-            .send_request_inner(&mut connection, target, &request)
-            .await?;
+    pub async fn send_request(&self, request: Request) -> Result<Response, ProtocolError> {
+        let mut connection = with_timeout_result(
+            self.timeouts.connect,
+            H3Connection::connect(&request.target),
+        )
+        .await?;
+        let stream_id = self.send_request_inner(&mut connection, &request).await?;
         self.read_response(&mut connection, stream_id).await
     }
 
@@ -126,8 +157,10 @@ impl H3Client {
         let protocol_version = HTTP_VERSION_3_0.to_string();
 
         loop {
-            connection.poll_control().await?;
-            let frame_opt = connection.read_request_frame(stream_id).await?;
+            with_timeout_result(self.timeouts.read, connection.poll_control()).await?;
+            let frame_opt =
+                with_timeout_result(self.timeouts.read, connection.read_request_frame(stream_id))
+                    .await?;
 
             let frame = match frame_opt {
                 Some(frame) => frame,
@@ -136,8 +169,11 @@ impl H3Client {
 
             match &frame.frame_type {
                 FrameType::H3(FrameTypeH3::Headers) => {
-                    let decoded_headers =
-                        connection.decode_headers(stream_id, &frame.payload).await?;
+                    let decoded_headers = with_timeout_result(
+                        self.timeouts.read,
+                        connection.decode_headers(stream_id, &frame.payload),
+                    )
+                    .await?;
 
                     let mut status_code = decoded_headers.iter().find_map(|header| {
                         (header.name == ":status")
@@ -183,10 +219,12 @@ impl H3Client {
                 }
                 FrameType::H3(FrameTypeH3::Data) => {
                     body.extend_from_slice(&frame.payload);
-                    connection.handle_frame(&frame).await?;
+                    with_timeout_result(self.timeouts.read, connection.handle_frame(&frame))
+                        .await?;
                 }
                 _ => {
-                    connection.handle_frame(&frame).await?;
+                    with_timeout_result(self.timeouts.read, connection.handle_frame(&frame))
+                        .await?;
                 }
             }
         }
@@ -212,7 +250,7 @@ impl H3Client {
 
 #[async_trait(?Send)]
 impl Protocol for H3Client {
-    async fn send(&self, target: &Target, request: Request) -> Result<Response, ProtocolError> {
-        self.send_request(target, request).await
+    async fn send(&self, request: Request) -> Result<Response, ProtocolError> {
+        self.send_request(request).await
     }
 }

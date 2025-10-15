@@ -29,12 +29,7 @@ impl<F> MockSink<F> {
 
 #[tokio::test]
 async fn repeat_and_send_h2_frames() {
-    let frame = FrameH2::new(
-        FrameTypeH2::Data,
-        0,
-        1,
-        Bytes::from_static(b"payload"),
-    );
+    let frame = FrameH2::new(FrameTypeH2::Data, 0, 1, Bytes::from_static(b"payload"));
     let mut sink = MockSink::<FrameH2>::new();
 
     frame

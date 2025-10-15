@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::io;
 
 use quinn::crypto::rustls::QuicClientConfig;
+use rustls::crypto::ring::default_provider;
 use rustls::ClientConfig;
 use std::sync::Arc;
 use tokio::net::lookup_host;
@@ -76,6 +77,8 @@ impl H3Connection {
         port: u16,
         server_name: &str,
     ) -> io::Result<Connection> {
+        let _ = default_provider().install_default();
+
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())?;
 
         let mut rustls_config = ClientConfig::builder()

@@ -1,25 +1,37 @@
 use crate::stream::{create_stream, TransportStream};
-use crate::types::{Header, Protocol, ProtocolError, Request, Response, Target};
+use crate::types::{ClientTimeouts, Header, Protocol, ProtocolError, Request, Response, Target};
 use crate::utils::{
-    CHUNKED_ENCODING, CONTENT_LENGTH_HEADER, CRLF, HOST_HEADER, HTTP_VERSION_1_1,
-    TRANSFER_ENCODING_HEADER, USER_AGENT, USER_AGENT_HEADER,
+    ensure_user_agent, with_timeout_result, CHUNKED_ENCODING, CONTENT_LENGTH_HEADER, CRLF,
+    HOST_HEADER, HTTP_VERSION_1_1, TRANSFER_ENCODING_HEADER,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-pub struct H1Client;
+pub struct H1Client {
+    timeouts: ClientTimeouts,
+}
 
 impl H1Client {
     pub fn new() -> Self {
-        H1Client
+        Self::with_timeouts(ClientTimeouts::default())
     }
 
-    pub async fn send_request(
-        &self,
-        target: &Target,
-        request: Request,
-    ) -> Result<Response, ProtocolError> {
+    pub fn with_timeouts(timeouts: ClientTimeouts) -> Self {
+        Self { timeouts }
+    }
+
+    pub fn timeouts(&self) -> &ClientTimeouts {
+        &self.timeouts
+    }
+
+    pub async fn send_request(&self, request: Request) -> Result<Response, ProtocolError> {
+        let mut stream = self.open_stream(&request.target).await?;
+        self.write_request(&mut stream, &request).await?;
+        self.read_response(&mut stream, &request.method).await
+    }
+
+    async fn open_stream(&self, target: &Target) -> Result<TransportStream, ProtocolError> {
         let host = target
             .host()
             .ok_or_else(|| ProtocolError::InvalidTarget("Target missing host".to_string()))?;
@@ -27,48 +39,44 @@ impl H1Client {
             .port()
             .ok_or_else(|| ProtocolError::InvalidTarget("Target missing port".to_string()))?;
 
-        let mut stream = create_stream(target.scheme(), host, port)
-            .await
-            .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?;
+        let scheme = target.scheme().to_string();
+        let host_owned = host.to_string();
+        let connect_timeout = self.timeouts.connect;
 
-        Self::write_request(&mut stream, target, &request).await?;
-        Self::read_response(&mut stream, &request.method).await
+        with_timeout_result(connect_timeout, async move {
+            create_stream(&scheme, &host_owned, port, connect_timeout)
+                .await
+                .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))
+        })
+        .await
     }
 
     async fn write_request(
+        &self,
         stream: &mut TransportStream,
-        target: &Target,
         request: &Request,
     ) -> Result<(), ProtocolError> {
         let mut req = Vec::new();
-        let path = target.path();
+        let path = request.target.path();
 
         let empty_trailers = Vec::new();
         let mut headers = request.headers.clone();
         let trailers = request.trailers.as_ref().unwrap_or(&empty_trailers);
+        ensure_user_agent(&mut headers);
 
         req.extend_from_slice(
-            format!("{} {} {}{}", request.method, path, HTTP_VERSION, CRLF).as_bytes(),
-        ); // request line
+            format!("{} {} {}{}", request.method, path, HTTP_VERSION_1_1, CRLF).as_bytes(),
+        );
 
         let has_host = headers
             .iter()
             .any(|h| h.name.eq_ignore_ascii_case(HOST_HEADER));
         if !has_host {
-            let authority = target
+            let authority = request
+                .target
                 .authority()
-                .unwrap_or_else(|| target.host().unwrap_or_default().to_string());
-            headers.push(Header::new(HOST_HEADER.to_string(), authority.to_string()));
-        }
-
-        let has_user_agent = headers
-            .iter()
-            .any(|h| h.name.eq_ignore_ascii_case(USER_AGENT_HEADER));
-        if !has_user_agent {
-            headers.push(Header::new(
-                USER_AGENT_HEADER.to_string(),
-                USER_AGENT.to_string(),
-            ));
+                .unwrap_or_else(|| request.target.host().unwrap_or_default().to_string());
+            headers.push(Header::new(HOST_HEADER.to_string(), authority));
         }
 
         let has_content_length = headers
@@ -102,10 +110,8 @@ impl H1Client {
             req.extend_from_slice(format!("{}{}", header.to_string(), CRLF).as_bytes());
         }
 
-        // End headers
         req.extend_from_slice(CRLF.as_bytes());
 
-        // Write body and trailers
         let empty_body = Bytes::new();
         if use_chunked {
             let body = request.body.as_ref().unwrap_or(&empty_body);
@@ -115,79 +121,55 @@ impl H1Client {
             req.extend_from_slice(body);
         }
 
-        Self::write_to_stream(stream, &req).await?;
-
-        Ok(())
+        self.write_to_stream(stream, &req).await
     }
 
     async fn write_to_stream(
+        &self,
         stream: &mut TransportStream,
         data: &[u8],
     ) -> Result<(), ProtocolError> {
-        match stream {
-            TransportStream::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io)?,
-            TransportStream::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io)?,
-        }
-        Ok(())
-    }
-
-    fn build_chunked_body(body: &Bytes, trailers: &[Header]) -> Vec<u8> {
-        let mut chunked_body = Vec::new();
-
-        if !body.is_empty() {
-            // Write chunk size in hex
-            let chunk_size = format!("{:x}{}", body.len(), CRLF);
-            chunked_body.extend_from_slice(chunk_size.as_bytes());
-
-            // Write chunk data
-            chunked_body.extend_from_slice(body);
-
-            // Write trailing CRLF
-            chunked_body.extend_from_slice(CRLF.as_bytes());
-        }
-
-        // Write final chunk (size 0)
-        let final_chunk = format!("0{}", CRLF);
-        chunked_body.extend_from_slice(final_chunk.as_bytes());
-
-        // Write trailers
-        for trailer in trailers {
-            let trailer_line = format!("{}{}", trailer.to_string(), CRLF);
-            chunked_body.extend_from_slice(trailer_line.as_bytes());
-        }
-
-        // Final CRLF to end the message
-        chunked_body.extend_from_slice(CRLF.as_bytes());
-
-        chunked_body
+        let write_timeout = self.timeouts.write;
+        with_timeout_result(write_timeout, async {
+            match stream {
+                TransportStream::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io),
+                TransportStream::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io),
+            }
+        })
+        .await
     }
 
     async fn read_response(
+        &self,
         stream: &mut TransportStream,
         method: &str,
     ) -> Result<Response, ProtocolError> {
         match stream {
             TransportStream::Tcp(tcp) => {
                 let mut reader = BufReader::new(tcp);
-                Self::read_response_from_reader(&mut reader, method).await
+                self.read_response_from_reader(&mut reader, method).await
             }
             TransportStream::Tls(tls) => {
                 let mut reader = BufReader::new(tls);
-                Self::read_response_from_reader(&mut reader, method).await
+                self.read_response_from_reader(&mut reader, method).await
             }
         }
     }
 
     async fn read_response_from_reader<R: AsyncBufRead + Unpin>(
+        &self,
         reader: &mut R,
         method: &str,
     ) -> Result<Response, ProtocolError> {
         loop {
             let mut status_line = String::new();
-            let bytes = reader
-                .read_line(&mut status_line)
-                .await
-                .map_err(ProtocolError::Io)?;
+            let bytes = with_timeout_result(self.timeouts.read, async {
+                reader
+                    .read_line(&mut status_line)
+                    .await
+                    .map_err(ProtocolError::Io)
+            })
+            .await?;
 
             if bytes == 0 {
                 return Err(ProtocolError::InvalidResponse(
@@ -196,20 +178,20 @@ impl H1Client {
             }
 
             if status_line.trim().is_empty() {
-                // Skip empty lines between responses.
                 continue;
             }
 
             let (status, protocol_version) = Self::parse_status_line(&status_line)?;
-            let headers = Self::read_header_block(reader).await?;
+            let headers = self.read_header_block(reader).await?;
 
             if status < 200 {
-                // Informational response; skip body (per RFC 7230 §3.3.1) and continue.
-                continue;
+                // 101 Switching Protocols is a final response (RFC 7231 §6.2.2)
+                if status != 101 {
+                    continue;
+                }
             }
 
-            // Read body and trailers for the final response.
-            let (body, trailers) = Self::read_body(reader, &headers, method, status).await?;
+            let (body, trailers) = self.read_body(reader, &headers, method, status).await?;
 
             return Ok(Response {
                 status,
@@ -225,23 +207,31 @@ impl H1Client {
         }
     }
 
-    pub fn parse_status_line(status_line: &str) -> Result<(u16, String), ProtocolError> {
-        let parts: Vec<&str> = status_line.trim().split_whitespace().collect();
-        if parts.len() < 2 {
-            return Err(ProtocolError::InvalidResponse(
-                "Invalid status line".to_string(),
-            ));
+    async fn read_header_block<R: AsyncBufRead + Unpin>(
+        &self,
+        reader: &mut R,
+    ) -> Result<Vec<Header>, ProtocolError> {
+        let mut headers = Vec::new();
+        loop {
+            let mut line = String::new();
+            with_timeout_result(self.timeouts.read, async {
+                reader.read_line(&mut line).await.map_err(ProtocolError::Io)
+            })
+            .await?;
+
+            if line.trim().is_empty() {
+                break;
+            }
+
+            if let Some(header) = crate::utils::parse_header(line.trim()) {
+                headers.push(header);
+            }
         }
-
-        let protocol_version = parts[0].to_string();
-        let status_code = parts[1]
-            .parse::<u16>()
-            .map_err(|_| ProtocolError::InvalidResponse("Invalid status code".to_string()))?;
-
-        Ok((status_code, protocol_version))
+        Ok(headers)
     }
 
     async fn read_body<R: AsyncBufRead + Unpin>(
+        &self,
         reader: &mut R,
         headers: &[Header],
         method: &str,
@@ -259,9 +249,8 @@ impl H1Client {
         });
 
         if is_chunked {
-            Self::read_chunked_body(reader).await
+            self.read_chunked_body(reader).await
         } else {
-            // Check for Content-Length
             let content_length = headers
                 .iter()
                 .find(|h| h.name.to_lowercase() == CONTENT_LENGTH_HEADER)
@@ -270,50 +259,56 @@ impl H1Client {
 
             if let Some(length) = content_length {
                 let mut body = vec![0u8; length];
-                reader
-                    .read_exact(&mut body)
-                    .await
-                    .map_err(ProtocolError::Io)?;
+                with_timeout_result(self.timeouts.read, async {
+                    reader
+                        .read_exact(&mut body)
+                        .await
+                        .map_err(ProtocolError::Io)
+                })
+                .await?;
                 Ok((Bytes::from(body), Vec::new()))
             } else {
-                // Read until connection close
                 let mut body = Vec::new();
-                reader
-                    .read_to_end(&mut body)
-                    .await
-                    .map_err(ProtocolError::Io)?;
+                with_timeout_result(self.timeouts.read, async {
+                    reader
+                        .read_to_end(&mut body)
+                        .await
+                        .map_err(ProtocolError::Io)
+                })
+                .await?;
                 Ok((Bytes::from(body), Vec::new()))
             }
         }
     }
 
     async fn read_chunked_body<R: AsyncBufRead + Unpin>(
+        &self,
         reader: &mut R,
     ) -> Result<(Bytes, Vec<Header>), ProtocolError> {
         let mut body = Vec::new();
         let mut trailers = Vec::new();
 
         loop {
-            // Read chunk size line
             let mut size_line = String::new();
-            reader
-                .read_line(&mut size_line)
-                .await
-                .map_err(ProtocolError::Io)?;
+            with_timeout_result(self.timeouts.read, async {
+                reader
+                    .read_line(&mut size_line)
+                    .await
+                    .map_err(ProtocolError::Io)
+            })
+            .await?;
 
-            // Parse chunk size (hex)
-            let size_str = size_line.trim().split(';').next().unwrap_or("").trim();
+            let size_str = size_line.trim().split(';').next().unwrap_or(" ").trim();
             let chunk_size = usize::from_str_radix(size_str, 16)
                 .map_err(|_| ProtocolError::InvalidResponse("Invalid chunk size".to_string()))?;
 
             if chunk_size == 0 {
-                // Read trailing headers
                 loop {
                     let mut line = String::new();
-                    reader
-                        .read_line(&mut line)
-                        .await
-                        .map_err(ProtocolError::Io)?;
+                    with_timeout_result(self.timeouts.read, async {
+                        reader.read_line(&mut line).await.map_err(ProtocolError::Io)
+                    })
+                    .await?;
 
                     if line.trim().is_empty() {
                         break;
@@ -326,45 +321,27 @@ impl H1Client {
                 break;
             }
 
-            // Read chunk data
             let mut chunk = vec![0u8; chunk_size];
-            reader
-                .read_exact(&mut chunk)
-                .await
-                .map_err(ProtocolError::Io)?;
+            with_timeout_result(self.timeouts.read, async {
+                reader
+                    .read_exact(&mut chunk)
+                    .await
+                    .map_err(ProtocolError::Io)
+            })
+            .await?;
             body.extend_from_slice(&chunk);
 
-            // Read trailing CRLF
             let mut crlf = [0u8; 2];
-            reader
-                .read_exact(&mut crlf)
-                .await
-                .map_err(ProtocolError::Io)?;
+            with_timeout_result(self.timeouts.read, async {
+                reader
+                    .read_exact(&mut crlf)
+                    .await
+                    .map_err(ProtocolError::Io)
+            })
+            .await?;
         }
 
         Ok((Bytes::from(body), trailers))
-    }
-
-    async fn read_header_block<R: AsyncBufRead + Unpin>(
-        reader: &mut R,
-    ) -> Result<Vec<Header>, ProtocolError> {
-        let mut headers = Vec::new();
-        loop {
-            let mut line = String::new();
-            reader
-                .read_line(&mut line)
-                .await
-                .map_err(ProtocolError::Io)?;
-
-            if line.trim().is_empty() {
-                break;
-            }
-
-            if let Some(header) = crate::utils::parse_header(line.trim()) {
-                headers.push(header);
-            }
-        }
-        Ok(headers)
     }
 
     fn response_has_body(method: &str, status: u16) -> bool {
@@ -378,11 +355,50 @@ impl H1Client {
 
         !matches!(status, 204 | 205 | 304)
     }
+
+    fn build_chunked_body(body: &Bytes, trailers: &[Header]) -> Vec<u8> {
+        let mut chunked_body = Vec::new();
+
+        if !body.is_empty() {
+            let chunk_size = format!("{:x}{}", body.len(), CRLF);
+            chunked_body.extend_from_slice(chunk_size.as_bytes());
+            chunked_body.extend_from_slice(body);
+            chunked_body.extend_from_slice(CRLF.as_bytes());
+        }
+
+        let final_chunk = format!("0{}", CRLF);
+        chunked_body.extend_from_slice(final_chunk.as_bytes());
+
+        for trailer in trailers {
+            let trailer_line = format!("{}{}", trailer.to_string(), CRLF);
+            chunked_body.extend_from_slice(trailer_line.as_bytes());
+        }
+
+        chunked_body.extend_from_slice(CRLF.as_bytes());
+
+        chunked_body
+    }
+
+    pub fn parse_status_line(status_line: &str) -> Result<(u16, String), ProtocolError> {
+        let parts: Vec<&str> = status_line.trim().split_whitespace().collect();
+        if parts.len() < 2 {
+            return Err(ProtocolError::InvalidResponse(
+                "Invalid status line".to_string(),
+            ));
+        }
+
+        let protocol_version = parts[0].to_string();
+        let status_code = parts[1]
+            .parse::<u16>()
+            .map_err(|_| ProtocolError::InvalidResponse("Invalid status code".to_string()))?;
+
+        Ok((status_code, protocol_version))
+    }
 }
 
 #[async_trait(?Send)]
 impl Protocol for H1Client {
-    async fn send(&self, target: &Target, request: Request) -> Result<Response, ProtocolError> {
-        self.send_request(target, request).await
+    async fn send(&self, request: Request) -> Result<Response, ProtocolError> {
+        self.send_request(request).await
     }
 }

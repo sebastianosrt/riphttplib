@@ -2,11 +2,12 @@ use crate::h2::framing::{
     END_HEADERS_FLAG, END_STREAM_FLAG, FRAME_HEADER_SIZE, PADDED_FLAG, PRIORITY_FLAG,
 };
 use crate::h2::hpack::HpackCodec;
-use crate::stream::{create_h2_tls_stream, TransportStream};
+use crate::stream::{create_h2_tls_stream, create_h2c_stream, TransportStream};
 use crate::types::{
-    FrameH2, FrameSink, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode,
+    ClientTimeouts, FrameH2, FrameSink, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode,
     H2StreamErrorKind, Header, ProtocolError, Target,
 };
+use crate::utils::with_timeout_result;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use std::collections::{HashMap, VecDeque};
@@ -128,16 +129,26 @@ pub struct H2Connection {
     initial_settings_received: bool,
     peer_allows_push: bool,
     goaway_reason: Option<(H2ErrorCode, String)>,
+    goaway_last_stream_id: Option<u32>,
+    goaway_received: bool,
     pending_writes: Vec<Bytes>,
     pending_write_bytes: usize,
     auto_flush_bytes: Option<usize>,
+    timeouts: ClientTimeouts,
 }
 
 impl H2Connection {
-    pub async fn connect(target: &Target) -> Result<Self, ProtocolError> {
-        if target.scheme() != "https" && target.scheme() != "h2" {
+    pub async fn connect(
+        target: &Target,
+        timeouts: &ClientTimeouts,
+    ) -> Result<Self, ProtocolError> {
+        let scheme = target.scheme();
+        let is_tls = matches!(scheme, "https" | "h2");
+        let is_h2c = matches!(scheme, "h2c") || scheme == "http";
+
+        if !is_tls && !is_h2c {
             return Err(ProtocolError::RequestFailed(
-                "HTTP/2 requires HTTPS".to_string(),
+                "HTTP/2 requires https, h2, h2c, or http schemes".to_string(),
             ));
         }
 
@@ -148,16 +159,22 @@ impl H2Connection {
             .port()
             .ok_or_else(|| ProtocolError::InvalidTarget("Target missing port".to_string()))?;
 
-        let stream = create_h2_tls_stream(host, port, host)
-            .await
-            .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?;
+        let transport = if is_tls {
+            create_h2_tls_stream(host, port, host, timeouts.connect)
+                .await
+                .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?
+        } else {
+            create_h2c_stream(host, port, timeouts.connect)
+                .await
+                .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?
+        };
 
-        let mut connection = Self::new(stream);
+        let mut connection = Self::new(transport, timeouts.clone());
         connection.perform_handshake().await?;
         Ok(connection)
     }
 
-    pub fn new(stream: TransportStream) -> Self {
+    pub fn new(stream: TransportStream, timeouts: ClientTimeouts) -> Self {
         let mut settings = HashMap::new();
         settings.insert(SETTINGS_HEADER_TABLE_SIZE, DEFAULT_HEADER_TABLE_SIZE);
         settings.insert(SETTINGS_ENABLE_PUSH, 0);
@@ -193,9 +210,12 @@ impl H2Connection {
             initial_settings_received: false,
             peer_allows_push: true,
             goaway_reason: None,
+            goaway_last_stream_id: None,
+            goaway_received: false,
             pending_writes: Vec::new(),
             pending_write_bytes: 0,
             auto_flush_bytes: None,
+            timeouts,
         }
     }
 
@@ -349,6 +369,14 @@ impl H2Connection {
             return Err(ProtocolError::ConnectionFailed(
                 "HTTP/2 connection is not open".to_string(),
             ));
+        }
+
+        if let Some(last) = self.goaway_last_stream_id {
+            if self.next_stream_id > last {
+                return Err(ProtocolError::RequestFailed(
+                    "GOAWAY received: new streams are not allowed".to_string(),
+                ));
+            }
         }
 
         let stream_id = self.next_stream_id;
@@ -781,8 +809,15 @@ impl H2Connection {
         };
 
         self.last_stream_id = last_stream_id;
-        self.state = ConnectionState::Closed;
+        self.goaway_last_stream_id = Some(last_stream_id);
         self.goaway_reason = Some((h2_error, debug_data.clone()));
+        self.goaway_received = true;
+        if !matches!(
+            self.state,
+            ConnectionState::Closed | ConnectionState::HalfClosedRemote
+        ) {
+            self.state = ConnectionState::HalfClosedRemote;
+        }
 
         for (&id, stream) in self.streams.iter_mut() {
             if id > last_stream_id {
@@ -814,7 +849,7 @@ impl H2Connection {
                 }
             }
 
-            if !self.is_connection_open() {
+            if matches!(self.state, ConnectionState::Closed) {
                 return Err(self.goaway_error());
             }
 
@@ -1168,8 +1203,7 @@ impl H2Connection {
     }
     pub async fn send_frame(&mut self, frame: &FrameH2) -> Result<(), ProtocolError> {
         let serialized = frame.serialize()?;
-        self.queue_serialized_frame(serialized).await?;
-        self.flush().await
+        self.queue_serialized_frame(serialized).await
     }
 
     async fn queue_serialized_frame(&mut self, serialized: Bytes) -> Result<(), ProtocolError> {
@@ -1212,30 +1246,37 @@ impl H2Connection {
     }
 
     async fn write_to_stream(&mut self, data: &[u8]) -> Result<(), ProtocolError> {
-        match &mut self.stream {
-            TransportStream::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io)?,
-            TransportStream::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io)?,
-        }
-        Ok(())
+        let write_timeout = self.timeouts.write;
+        with_timeout_result(write_timeout, async {
+            match &mut self.stream {
+                TransportStream::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io),
+                TransportStream::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io),
+            }
+        })
+        .await
     }
 
     async fn read_from_stream(&mut self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
-        match &mut self.stream {
-            TransportStream::Tcp(tcp) => tcp
-                .read_exact(buffer)
-                .await
-                .map_err(ProtocolError::Io)
-                .map(|_| buffer.len()),
-            TransportStream::Tls(tls) => tls
-                .read_exact(buffer)
-                .await
-                .map_err(ProtocolError::Io)
-                .map(|_| buffer.len()),
-        }
+        let read_timeout = self.timeouts.read;
+        with_timeout_result(read_timeout, async {
+            match &mut self.stream {
+                TransportStream::Tcp(tcp) => {
+                    tcp.read_exact(buffer).await.map_err(ProtocolError::Io)?;
+                }
+                TransportStream::Tls(tls) => {
+                    tls.read_exact(buffer).await.map_err(ProtocolError::Io)?;
+                }
+            }
+            Ok(buffer.len())
+        })
+        .await
     }
 
     pub fn is_connection_open(&self) -> bool {
-        matches!(self.state, ConnectionState::Open)
+        matches!(
+            self.state,
+            ConnectionState::Open | ConnectionState::HalfClosedRemote
+        )
     }
 
     pub fn get_max_concurrent_streams(&self) -> u32 {

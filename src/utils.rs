@@ -1,7 +1,8 @@
-use crate::{
-    types::{Header, ProtocolError, Request, Target},
-};
+use crate::types::{Header, ProtocolError, Request, Target};
 use bytes::Bytes;
+use std::future::Future;
+use std::time::Duration;
+use tokio::time::timeout;
 use url::Url;
 
 pub const USER_AGENT: &str = "riphttplib/0.1.0";
@@ -170,13 +171,57 @@ pub fn merge_headers(pseudo: Vec<Header>, request: &Request) -> Vec<Header> {
 }
 
 pub fn build_request(
+    target: &str,
+    method: impl Into<String>,
+    headers: Vec<Header>,
+    body: Option<Bytes>,
+    trailers: Option<Vec<Header>>,
+) -> Result<Request, ProtocolError> {
+    Request::new(target, method).map(|r| {
+        r.with_headers(headers)
+            .with_optional_body(body)
+            .with_trailers(trailers)
+    })
+}
+
+pub fn build_request_with_target(
+    target: Target,
     method: impl Into<String>,
     headers: Vec<Header>,
     body: Option<Bytes>,
     trailers: Option<Vec<Header>>,
 ) -> Request {
-    Request::new(method)
+    Request::with_target(target, method)
         .with_headers(headers)
         .with_optional_body(body)
         .with_trailers(trailers)
+}
+
+pub fn ensure_user_agent(headers: &mut Vec<Header>) {
+    if !headers
+        .iter()
+        .any(|h| h.name.eq_ignore_ascii_case(USER_AGENT_HEADER))
+    {
+        headers.push(Header::new(
+            USER_AGENT_HEADER.to_string(),
+            USER_AGENT.to_string(),
+        ));
+    }
+}
+
+pub async fn with_timeout_result<F, T>(
+    duration: Option<Duration>,
+    future: F,
+) -> Result<T, ProtocolError>
+where
+    F: Future<Output = Result<T, ProtocolError>>,
+{
+    if let Some(dur) = duration {
+        match timeout(dur, future).await {
+            Ok(result) => result,
+            Err(_) => Err(ProtocolError::Timeout),
+        }
+    } else {
+        future.await
+    }
 }
