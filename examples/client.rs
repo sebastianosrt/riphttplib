@@ -12,19 +12,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let trailers = vec![Header::new("trailer".into(), "test".into())];
 
     let request = Request::new("https://quic.tech:8443", "GET")?
-        .with_header(Header::new("User-Agent".to_string(), "riphttplib/0.1.0".to_string()))
-        .with_headers(headers)
-        .with_body(body)
-        .with_json(json!({ "test": "value" }))
-        .with_params(vec![("test", "h3-features")])
-        .with_cookies(vec![("session", "test")])
-        .with_timeout(ClientTimeouts {
+        .header(Header::new("User-Agent".to_string(), "riphttplib/0.1.0".to_string()))
+        .headers(headers)
+        .body(body)
+        .json(json!({ "test": "value" }))
+        .params(vec![("test", "h3-features")])
+        .cookies(vec![("session", "test")])
+        .timeout(ClientTimeouts {
             connect: Some(Duration::from_secs(15)),
             read: Some(Duration::from_secs(45)),
             write: Some(Duration::from_secs(15)),
         })
-        .with_allow_redirects(true)
-        .with_trailers(Some(trailers));
+        .allow_redirects(true)
+        .trailers(Some(trailers));
 
     {
         let client = H1Client::new();

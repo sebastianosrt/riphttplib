@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    match connection.read_response_with_options(
+    match connection.read_response_options(
         stream_id,
         Some(std::time::Duration::from_secs(5)), // overall timeout
         Some(std::time::Duration::from_millis(1000)), // event timeout

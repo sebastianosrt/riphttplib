@@ -7,7 +7,7 @@ use crate::types::{
     ClientTimeouts, FrameH2, FrameSink, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode,
     H2StreamErrorKind, Header, ProtocolError,
 };
-use crate::utils::with_timeout_result;
+use crate::utils::timeout_result;
 use crate::Response;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -1264,7 +1264,7 @@ impl H2Connection {
 
     async fn write_to_stream(&mut self, data: &[u8]) -> Result<(), ProtocolError> {
         let write_timeout = self.timeouts.write;
-        with_timeout_result(write_timeout, async {
+        timeout_result(write_timeout, async {
             match &mut self.stream {
                 TransportStream::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io),
                 TransportStream::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io),
@@ -1275,7 +1275,7 @@ impl H2Connection {
 
     async fn read_from_stream(&mut self, buffer: &mut [u8]) -> Result<usize, ProtocolError> {
         let read_timeout = self.timeouts.read;
-        with_timeout_result(read_timeout, async {
+        timeout_result(read_timeout, async {
             match &mut self.stream {
                 TransportStream::Tcp(tcp) => {
                     tcp.read_exact(buffer).await.map_err(ProtocolError::Io)?;
@@ -1325,10 +1325,10 @@ impl H2Connection {
         self: &mut Self,
         stream_id: u32,
     ) -> Result<Response, ProtocolError> {
-        self.read_response_with_options(stream_id, None, None, None, None).await
+        self.read_response_options(stream_id, None, None, None, None).await
     }
 
-    pub async fn read_response_with_options(
+    pub async fn read_response_options(
         self: &mut Self,
         stream_id: u32,
         overall_timeout: Option<Duration>,

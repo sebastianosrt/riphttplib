@@ -34,7 +34,7 @@ impl ProxyConfig {
         }
     }
 
-    pub fn with_auth(mut self, username: String, password: String) -> Self {
+    pub fn auth(mut self, username: String, password: String) -> Self {
         self.username = Some(username);
         self.password = Some(password);
         self
@@ -113,17 +113,17 @@ impl ProxySettings {
         })
     }
 
-    pub fn with_http<S: Into<String>>(mut self, url: S) -> Result<Self, url::ParseError> {
+    pub fn http<S: Into<String>>(mut self, url: S) -> Result<Self, url::ParseError> {
         self.http = Some(Url::parse(&url.into())?);
         Ok(self)
     }
 
-    pub fn with_https<S: Into<String>>(mut self, url: S) -> Result<Self, url::ParseError> {
+    pub fn https<S: Into<String>>(mut self, url: S) -> Result<Self, url::ParseError> {
         self.https = Some(Url::parse(&url.into())?);
         Ok(self)
     }
 
-    pub fn with_socks<S: Into<String>>(mut self, url: S) -> Result<Self, url::ParseError> {
+    pub fn socks<S: Into<String>>(mut self, url: S) -> Result<Self, url::ParseError> {
         self.socks = Some(ProxyConfig::socks5(Url::parse(&url.into())?));
         Ok(self)
     }
@@ -133,25 +133,25 @@ impl ProxySettings {
 #[macro_export]
 macro_rules! proxy_settings {
     (http = $http:expr) => {
-        ProxySettings::new().with_http($http)
+        ProxySettings::new().http($http)
     };
     (https = $https:expr) => {
-        ProxySettings::new().with_https($https)
+        ProxySettings::new().https($https)
     };
     (socks = $socks:expr) => {
-        ProxySettings::new().with_socks($socks)
+        ProxySettings::new().socks($socks)
     };
     (http = $http:expr, https = $https:expr) => {
-        ProxySettings::new().with_http($http)?.with_https($https)
+        ProxySettings::new().http($http)?.https($https)
     };
     (http = $http:expr, socks = $socks:expr) => {
-        ProxySettings::new().with_http($http)?.with_socks($socks)
+        ProxySettings::new().http($http)?.socks($socks)
     };
     (https = $https:expr, socks = $socks:expr) => {
-        ProxySettings::new().with_https($https)?.with_socks($socks)
+        ProxySettings::new().https($https)?.socks($socks)
     };
     (http = $http:expr, https = $https:expr, socks = $socks:expr) => {
-        ProxySettings::new().with_http($http)?.with_https($https)?.with_socks($socks)
+        ProxySettings::new().http($http)?.https($https)?.socks($socks)
     };
 }
 
@@ -225,23 +225,23 @@ impl Request {
         })
     }
 
-    pub fn with_header(mut self, header: Header) -> Self {
+    pub fn header(mut self, header: Header) -> Self {
         self.headers.push(header);
         self
     }
 
-    pub fn with_headers(mut self, headers: Vec<Header>) -> Self {
+    pub fn headers(mut self, headers: Vec<Header>) -> Self {
         self.headers = headers;
         self
     }
 
-    pub fn with_body<B: Into<Bytes>>(mut self, body: B) -> Self {
+    pub fn body<B: Into<Bytes>>(mut self, body: B) -> Self {
         self.body = Some(body.into());
         self.json = None;
         self
     }
 
-    pub fn with_optional_body<B: Into<Bytes>>(mut self, body: Option<B>) -> Self {
+    pub fn optional_body<B: Into<Bytes>>(mut self, body: Option<B>) -> Self {
         self.body = body.map(Into::into);
         if self.body.is_some() {
             self.json = None;
@@ -249,12 +249,12 @@ impl Request {
         self
     }
 
-    pub fn with_trailers(mut self, trailers: Option<Vec<Header>>) -> Self {
+    pub fn trailers(mut self, trailers: Option<Vec<Header>>) -> Self {
         self.trailers = trailers;
         self
     }
 
-    pub fn with_params<I, K, V>(mut self, params: I) -> Self
+    pub fn params<I, K, V>(mut self, params: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
@@ -267,7 +267,7 @@ impl Request {
         self
     }
 
-    pub fn with_json(mut self, json: Value) -> Self {
+    pub fn json(mut self, json: Value) -> Self {
         let serialized =
             serde_json::to_vec(&json).expect("serializing JSON body into bytes must succeed");
         self.body = Some(Bytes::from(serialized));
@@ -275,7 +275,7 @@ impl Request {
         self
     }
 
-    pub fn with_cookies<I, K, V>(mut self, cookies: I) -> Self
+    pub fn cookies<I, K, V>(mut self, cookies: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
@@ -288,59 +288,59 @@ impl Request {
         self
     }
 
-    pub fn with_timeout(mut self, timeouts: ClientTimeouts) -> Self {
+    pub fn timeout(mut self, timeouts: ClientTimeouts) -> Self {
         self.timeout = Some(timeouts);
         self
     }
 
-    pub fn with_allow_redirects(mut self, allow: bool) -> Self {
+    pub fn allow_redirects(mut self, allow: bool) -> Self {
         self.allow_redirects = allow;
         self
     }
 
-    pub fn with_proxies(mut self, proxies: ProxySettings) -> Self {
+    pub fn proxies(mut self, proxies: ProxySettings) -> Self {
         self.proxies = Some(proxies);
         self
     }
 
-    pub fn with_http_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
+    pub fn http_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
         let mut proxies = self.proxies.unwrap_or_default();
         proxies.http = Some(Url::parse(proxy_url.as_ref())?);
         self.proxies = Some(proxies);
         Ok(self)
     }
 
-    pub fn with_https_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
+    pub fn https_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
         let mut proxies = self.proxies.unwrap_or_default();
         proxies.https = Some(Url::parse(proxy_url.as_ref())?);
         self.proxies = Some(proxies);
         Ok(self)
     }
 
-    pub fn with_socks5_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
+    pub fn socks5_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
         let mut proxies = self.proxies.unwrap_or_default();
         proxies.socks = Some(ProxyConfig::socks5(Url::parse(proxy_url.as_ref())?));
         self.proxies = Some(proxies);
         Ok(self)
     }
 
-    pub fn with_socks5_proxy_auth<S: AsRef<str>>(mut self, proxy_url: S, username: String, password: String) -> Result<Self, url::ParseError> {
+    pub fn socks5_proxy_auth<S: AsRef<str>>(mut self, proxy_url: S, username: String, password: String) -> Result<Self, url::ParseError> {
         let mut proxies = self.proxies.unwrap_or_default();
-        proxies.socks = Some(ProxyConfig::socks5(Url::parse(proxy_url.as_ref())?).with_auth(username, password));
+        proxies.socks = Some(ProxyConfig::socks5(Url::parse(proxy_url.as_ref())?).auth(username, password));
         self.proxies = Some(proxies);
         Ok(self)
     }
 
-    pub fn with_socks4_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
+    pub fn socks4_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
         let mut proxies = self.proxies.unwrap_or_default();
         proxies.socks = Some(ProxyConfig::socks4(Url::parse(proxy_url.as_ref())?));
         self.proxies = Some(proxies);
         Ok(self)
     }
 
-    pub fn with_socks4_proxy_auth<S: AsRef<str>>(mut self, proxy_url: S, username: String) -> Result<Self, url::ParseError> {
+    pub fn socks4_proxy_auth<S: AsRef<str>>(mut self, proxy_url: S, username: String) -> Result<Self, url::ParseError> {
         let mut proxies = self.proxies.unwrap_or_default();
-        proxies.socks = Some(ProxyConfig::socks4(Url::parse(proxy_url.as_ref())?).with_auth(username, String::new()));
+        proxies.socks = Some(ProxyConfig::socks4(Url::parse(proxy_url.as_ref())?).auth(username, String::new()));
         self.proxies = Some(proxies);
         Ok(self)
     }

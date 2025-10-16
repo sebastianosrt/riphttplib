@@ -1,7 +1,7 @@
 use crate::stream::{create_stream, TransportStream};
 use crate::types::{ClientTimeouts, Header, Protocol, ProtocolError, Request, Response};
 use crate::utils::{
-    ensure_user_agent, with_timeout_result, CHUNKED_ENCODING, CONTENT_LENGTH_HEADER, CRLF,
+    ensure_user_agent, timeout_result, CHUNKED_ENCODING, CONTENT_LENGTH_HEADER, CRLF,
     HOST_HEADER, HTTP_VERSION_1_1, TRANSFER_ENCODING_HEADER, parse_target,
 };
 use async_trait::async_trait;
@@ -15,14 +15,14 @@ pub struct H1Client {
 
 impl H1Client {
     pub fn new() -> Self {
-        Self::with_timeouts(ClientTimeouts::default())
+        Self::timeouts(ClientTimeouts::default())
     }
 
-    pub fn with_timeouts(timeouts: ClientTimeouts) -> Self {
+    pub fn timeouts(timeouts: ClientTimeouts) -> Self {
         Self { timeouts }
     }
 
-    pub fn timeouts(&self) -> &ClientTimeouts {
+    pub fn get_timeouts(&self) -> &ClientTimeouts {
         &self.timeouts
     }
 
@@ -89,7 +89,7 @@ impl H1Client {
         if let Some(proxy_settings) = &request.proxies {
             // First check for SOCKS proxy
             if let Some(socks_proxy) = &proxy_settings.socks {
-                return with_timeout_result(connect_timeout, async move {
+                return timeout_result(connect_timeout, async move {
                     if target.scheme() == "https" {
                         crate::proxy::connect_through_proxy_https(socks_proxy, host, port, connect_timeout).await
                     } else {
@@ -113,7 +113,7 @@ impl H1Client {
                     crate::types::ProxyConfig::http(proxy_url.clone())
                 };
 
-                return with_timeout_result(connect_timeout, async move {
+                return timeout_result(connect_timeout, async move {
                     if target.scheme() == "https" {
                         crate::proxy::connect_through_proxy_https(&proxy_config, host, port, connect_timeout).await
                     } else {
@@ -126,7 +126,7 @@ impl H1Client {
 
         // Direct connection
         let host_owned = host.to_string();
-        with_timeout_result(connect_timeout, async move {
+        timeout_result(connect_timeout, async move {
             create_stream(&scheme, &host_owned, port, connect_timeout)
                 .await
                 .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))
@@ -214,7 +214,7 @@ impl H1Client {
         data: &[u8],
         write_timeout: Option<std::time::Duration>,
     ) -> Result<(), ProtocolError> {
-        with_timeout_result(write_timeout, async {
+        timeout_result(write_timeout, async {
             match stream {
                 TransportStream::Tcp(tcp) => tcp.write_all(data).await.map_err(ProtocolError::Io),
                 TransportStream::Tls(tls) => tls.write_all(data).await.map_err(ProtocolError::Io),
@@ -251,7 +251,7 @@ impl H1Client {
     ) -> Result<Response, ProtocolError> {
         loop {
             let mut status_line = String::new();
-            let bytes = with_timeout_result(timeouts.read, async {
+            let bytes = timeout_result(timeouts.read, async {
                 match reader.read_line(&mut status_line).await {
                     Ok(bytes) => Ok(bytes),
                     Err(e) => {
@@ -319,7 +319,7 @@ impl H1Client {
         let mut headers = Vec::new();
         loop {
             let mut line = String::new();
-            match with_timeout_result(timeouts.read, async {
+            match timeout_result(timeouts.read, async {
                 match reader.read_line(&mut line).await {
                     Ok(bytes) => Ok(bytes),
                     Err(e) => {
@@ -385,7 +385,7 @@ impl H1Client {
 
             if let Some(length) = content_length {
                 let mut body = vec![0u8; length];
-                with_timeout_result(timeouts.read, async {
+                timeout_result(timeouts.read, async {
                     reader
                         .read_exact(&mut body)
                         .await
@@ -395,7 +395,7 @@ impl H1Client {
                 Ok((Bytes::from(body), Vec::new()))
             } else {
                 let mut body = Vec::new();
-                let _result = with_timeout_result(timeouts.read, async {
+                let _result = timeout_result(timeouts.read, async {
                     // Use a custom reading loop to handle TLS close_notify gracefully
                     loop {
                         let mut buffer = [0u8; 8192];
@@ -432,7 +432,7 @@ impl H1Client {
 
         loop {
             let mut size_line = String::new();
-            with_timeout_result(timeouts.read, async {
+            timeout_result(timeouts.read, async {
                 match reader.read_line(&mut size_line).await {
                     Ok(bytes) => Ok(bytes),
                     Err(e) => {
@@ -460,7 +460,7 @@ impl H1Client {
             if chunk_size == 0 {
                 loop {
                     let mut line = String::new();
-                    with_timeout_result(timeouts.read, async {
+                    timeout_result(timeouts.read, async {
                         match reader.read_line(&mut line).await {
                             Ok(bytes) => Ok(bytes),
                             Err(e) => {
@@ -493,7 +493,7 @@ impl H1Client {
             }
 
             let mut chunk = vec![0u8; chunk_size];
-            with_timeout_result(timeouts.read, async {
+            timeout_result(timeouts.read, async {
                 reader
                     .read_exact(&mut chunk)
                     .await
@@ -503,7 +503,7 @@ impl H1Client {
             body.extend_from_slice(&chunk);
 
             let mut crlf = [0u8; 2];
-            with_timeout_result(timeouts.read, async {
+            timeout_result(timeouts.read, async {
                 reader
                     .read_exact(&mut crlf)
                     .await

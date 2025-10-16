@@ -48,7 +48,7 @@ impl Target {
         self.url.path()
     }
 
-    pub fn path_with_query(&self) -> String {
+    pub fn path_query(&self) -> String {
         let mut value = self.url.path().to_string();
         if let Some(query) = self.url.query() {
             value.push('?');

@@ -13,14 +13,14 @@ pub struct H2Client {
 
 impl H2Client {
     pub fn new() -> Self {
-        Self::with_timeouts(ClientTimeouts::default())
+        Self::timeouts(ClientTimeouts::default())
     }
 
-    pub fn with_timeouts(timeouts: ClientTimeouts) -> Self {
+    pub fn timeouts(timeouts: ClientTimeouts) -> Self {
         Self { timeouts }
     }
 
-    pub fn timeouts(&self) -> &ClientTimeouts {
+    pub fn get_timeouts(&self) -> &ClientTimeouts {
         &self.timeouts
     }
 
@@ -32,9 +32,9 @@ impl H2Client {
         trailers: Option<Vec<Header>>,
     ) -> Result<Request, ProtocolError> {
         Request::new(target, method).map(|r| {
-            r.with_headers(headers)
-                .with_optional_body(body)
-                .with_trailers(trailers)
+            r.headers(headers)
+                .optional_body(body)
+                .trailers(trailers)
         })
     }
 

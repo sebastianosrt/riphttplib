@@ -31,7 +31,7 @@ let client = H1Client::new();
 let target = parse_target("http://example.com/").expect("valid url");
 
 let request = Request::new("GET")
-    .with_headers(vec![Header::new("accept".into(), "text/plain".into())]);
+    .headers(vec![Header::new("accept".into(), "text/plain".into())]);
 
 let response = client.send_request(&target, request).await?;
 println!("status: {}", response.status);

@@ -182,9 +182,9 @@ pub fn build_request(
     trailers: Option<Vec<Header>>,
 ) -> Result<Request, ProtocolError> {
     Request::new(target, method).map(|r| {
-        r.with_headers(headers)
-            .with_optional_body(body)
-            .with_trailers(trailers)
+        r.headers(headers)
+            .optional_body(body)
+            .trailers(trailers)
     })
 }
 
@@ -200,7 +200,7 @@ pub fn ensure_user_agent(headers: &mut Vec<Header>) {
     }
 }
 
-pub async fn with_timeout_result<F, T>(
+pub async fn timeout_result<F, T>(
     duration: Option<Duration>,
     future: F,
 ) -> Result<T, ProtocolError>
