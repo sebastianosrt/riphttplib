@@ -5,12 +5,14 @@ use crate::h2::hpack::HpackCodec;
 use crate::stream::{create_h2_tls_stream, create_tcp_stream, TransportStream};
 use crate::types::{
     ClientTimeouts, FrameH2, FrameSink, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode,
-    H2StreamErrorKind, Header, ProtocolError, Target,
+    H2StreamErrorKind, Header, ProtocolError,
 };
 use crate::utils::with_timeout_result;
+use crate::Response;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use std::collections::{HashMap, VecDeque};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // HTTP/2 Connection Preface (RFC 7540 Section 3.5)
@@ -65,6 +67,23 @@ pub enum StreamEvent {
     RstStream {
         error_code: H2ErrorCode,
     },
+    // TODO maybe implement
+    // PushPromise {
+    //     promised_stream_id: u32,
+    //     headers: Vec<Header>,
+    // },
+    // Priority {
+    //     dependency: u32,
+    //     weight: u8,
+    //     exclusive: bool,
+    // },
+    // WindowUpdate {
+    //     increment: u32,
+    // },
+    // StreamError {
+    //     error: H2Error, // Your error type
+    // },
+    // StreamClosed, // Explicit close event
 }
 
 #[derive(Debug, Clone)]
@@ -139,9 +158,10 @@ impl StreamInfo {
 
 impl H2Connection {
     pub async fn connect(
-        target: &Target,
+        target: &str,
         timeouts: &ClientTimeouts, // TODO make optional
     ) -> Result<Self, ProtocolError> {
+        let target = crate::utils::parse_target(target)?;
         let scheme = target.scheme();
         let is_tls = matches!(scheme, "https" | "h2");
         let is_h2c = matches!(scheme, "h2c") || scheme == "http";
@@ -935,9 +955,6 @@ impl H2Connection {
     }
 
     fn ensure_stream(&mut self, stream_id: u32) {
-        if stream_id == 0 {
-            return;
-        }
         if !self.streams.contains_key(&stream_id) {
             let send_window = self.peer_initial_stream_window();
             let recv_window = self.local_initial_stream_window();
@@ -1302,6 +1319,156 @@ impl H2Connection {
 
     pub async fn close(&mut self) -> Result<(), ProtocolError> {
         self.send_goaway(self.last_stream_id, 0, None).await
+    }
+
+    pub async fn read_response(
+        self: &mut Self,
+        stream_id: u32,
+    ) -> Result<Response, ProtocolError> {
+        self.read_response_with_options(stream_id, None, None, None, None).await
+    }
+
+    pub async fn read_response_with_options(
+        self: &mut Self,
+        stream_id: u32,
+        overall_timeout: Option<Duration>,
+        event_timeout: Option<Duration>,
+        max_events: Option<usize>,
+        event_handler: Option<&dyn Fn(&StreamEvent)>,
+    ) -> Result<Response, ProtocolError> {
+        let protocol = "HTTP/2.0".to_string();
+        let mut status: Option<u16> = None;
+        let mut headers = Vec::new();
+        let mut body = Vec::new();
+        let mut trailers: Option<Vec<Header>> = None;
+        let mut event_count = 0;
+        let start_time = std::time::Instant::now();
+
+        loop {
+            // Check overall timeout
+            if let Some(timeout) = overall_timeout {
+                if start_time.elapsed() >= timeout {
+                    break;
+                }
+            }
+
+            // Check max events limit
+            if let Some(max) = max_events {
+                if event_count >= max {
+                    break;
+                }
+            }
+
+            // Read event with optional timeout
+            let event_result = if let Some(timeout) = event_timeout {
+                match tokio::time::timeout(timeout, self.recv_stream_event(stream_id)).await {
+                    Ok(result) => result,
+                    Err(_) => break, // Timeout - no more events
+                }
+            } else {
+                self.recv_stream_event(stream_id).await
+            };
+
+            let event = match event_result {
+                Ok(event) => {
+                    event_count += 1;
+
+                    // Call event handler if provided
+                    if let Some(handler) = event_handler {
+                        handler(&event);
+                    }
+
+                    event
+                }
+                Err(e) => {
+                    if event_handler.is_some() {
+                        // If we have a handler, this might be expected (like for testing)
+                        break;
+                    } else {
+                        return Err(e);
+                    }
+                }
+            };
+
+            match event {
+                StreamEvent::Headers {
+                    headers: block,
+                    end_stream,
+                    is_trailer,
+                } => {
+                    if !is_trailer {
+                        let mut parsed_status: Option<u16> = None;
+                        let mut filtered = Vec::new();
+                        for header in block.into_iter() {
+                            if header.name == ":status" {
+                                if let Some(ref value) = header.value {
+                                    if let Ok(code) = value.parse::<u16>() {
+                                        parsed_status = Some(code);
+                                    }
+                                }
+                            } else if !header.name.starts_with(':') {
+                                filtered.push(header);
+                            }
+                        }
+
+                        let code = parsed_status.ok_or_else(|| {
+                            ProtocolError::InvalidResponse(
+                                "Missing :status header in response".to_string(),
+                            )
+                        })?;
+
+                        if code < 200 {
+                            if end_stream {
+                                return Err(ProtocolError::InvalidResponse(
+                                    "Informational response closed stream".to_string(),
+                                ));
+                            }
+                            continue;
+                        }
+
+                        status = Some(code);
+                        headers = filtered;
+
+                        if end_stream {
+                            break;
+                        }
+                    } else {
+                        let trailer_headers = trailers.get_or_insert_with(Vec::new);
+                        trailer_headers
+                            .extend(block.into_iter().filter(|h| !h.name.starts_with(':')));
+                        if end_stream {
+                            break;
+                        }
+                    }
+                }
+                StreamEvent::Data {
+                    payload,
+                    end_stream,
+                } => {
+                    body.extend_from_slice(&payload);
+                    if end_stream {
+                        break;
+                    }
+                }
+                StreamEvent::RstStream { error_code } => {
+                    return Err(ProtocolError::H2StreamError(H2StreamErrorKind::Reset(
+                        error_code,
+                    )));
+                }
+            }
+        }
+
+        let status = status.ok_or_else(|| {
+            ProtocolError::InvalidResponse("No final response received".to_string())
+        })?;
+
+        Ok(Response {
+            status,
+            protocol,
+            headers,
+            body: Bytes::from(body),
+            trailers,
+        })
     }
 
     // pub fn generate_stream_ids(n: i32) -> Vec<u32> {

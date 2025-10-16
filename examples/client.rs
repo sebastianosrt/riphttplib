@@ -24,8 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             write: Some(Duration::from_secs(15)),
         })
         .with_allow_redirects(true)
-        .with_trailers(Some(trailers))
-        .with_stream(false);
+        .with_trailers(Some(trailers));
 
     {
         let client = H1Client::new();

@@ -1,4 +1,4 @@
-use crate::h2::connection::{H2Connection, StreamEvent};
+use crate::h2::connection::H2Connection;
 use crate::types::{
     ClientTimeouts, H2StreamErrorKind, Header, Protocol, ProtocolError, Request, Response,
 };
@@ -45,7 +45,7 @@ impl H2Client {
     ) -> Result<u32, ProtocolError> {
         let stream_id = connection.create_stream().await?;
 
-        let pseudo_headers = prepare_pseudo_headers(request, &request.target)?;
+        let pseudo_headers = prepare_pseudo_headers(request)?;
         let mut headers = merge_headers(pseudo_headers, request);
         ensure_user_agent(&mut headers);
 
@@ -112,9 +112,9 @@ impl H2Client {
             }
 
             let timeouts = request.effective_timeouts(&self.timeouts);
-            let mut connection = H2Connection::connect(&request.target, &timeouts).await?;
+            let mut connection = H2Connection::connect(request.target.url.as_str(), &timeouts).await?;
             let stream_id = self.send_request_inner(&mut connection, &request).await?;
-            let response = self.read_response(&mut connection, stream_id, request.stream).await?;
+            let response = connection.read_response(stream_id).await?;
 
             // Handle redirects if enabled
             if request.allow_redirects && Self::is_redirect_status(response.status) {
@@ -141,106 +141,6 @@ impl H2Client {
         })
     }
 
-    async fn read_response(
-        &self,
-        connection: &mut H2Connection,
-        stream_id: u32,
-        stream_response: bool,
-    ) -> Result<Response, ProtocolError> {
-        let protocol = "HTTP/2.0".to_string();
-        let mut status: Option<u16> = None;
-        let mut headers = Vec::new();
-        let mut body = Vec::new();
-        let mut trailers: Option<Vec<Header>> = None;
-
-        loop {
-            let event = connection.recv_stream_event(stream_id).await?;
-            match event {
-                StreamEvent::Headers {
-                    headers: block,
-                    end_stream,
-                    is_trailer,
-                } => {
-                    if !is_trailer {
-                        let mut parsed_status: Option<u16> = None;
-                        let mut filtered = Vec::new();
-                        for header in block.into_iter() {
-                            if header.name == ":status" {
-                                if let Some(ref value) = header.value {
-                                    if let Ok(code) = value.parse::<u16>() {
-                                        parsed_status = Some(code);
-                                    }
-                                }
-                            } else if !header.name.starts_with(':') {
-                                filtered.push(header);
-                            }
-                        }
-
-                        let code = parsed_status.ok_or_else(|| {
-                            ProtocolError::InvalidResponse(
-                                "Missing :status header in response".to_string(),
-                            )
-                        })?;
-
-                        if code < 200 {
-                            if end_stream {
-                                return Err(ProtocolError::InvalidResponse(
-                                    "Informational response closed stream".to_string(),
-                                ));
-                            }
-                            continue;
-                        }
-
-                        status = Some(code);
-                        headers = filtered;
-
-                        if end_stream {
-                            break;
-                        }
-                    } else {
-                        let trailer_headers = trailers.get_or_insert_with(Vec::new);
-                        trailer_headers
-                            .extend(block.into_iter().filter(|h| !h.name.starts_with(':')));
-                        if end_stream {
-                            break;
-                        }
-                    }
-                }
-                StreamEvent::Data {
-                    payload,
-                    end_stream,
-                } => {
-                    body.extend_from_slice(&payload);
-
-                    // For streaming, return after reading the first data frame
-                    if stream_response && !body.is_empty() {
-                        break;
-                    }
-
-                    if end_stream {
-                        break;
-                    }
-                }
-                StreamEvent::RstStream { error_code } => {
-                    return Err(ProtocolError::H2StreamError(H2StreamErrorKind::Reset(
-                        error_code,
-                    )));
-                }
-            }
-        }
-
-        let status = status.ok_or_else(|| {
-            ProtocolError::InvalidResponse("No final response received".to_string())
-        })?;
-
-        Ok(Response {
-            status,
-            protocol,
-            headers,
-            body: Bytes::from(body),
-            trailers,
-        })
-    }
 
     fn is_redirect_status(status: u16) -> bool {
         matches!(status, 300..=399)

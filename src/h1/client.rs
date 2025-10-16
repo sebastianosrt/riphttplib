@@ -42,7 +42,7 @@ impl H1Client {
             let mut stream = self.open_stream(&request, &timeouts).await?;
             self.write_request(&mut stream, &request, &timeouts).await?;
 
-            let response = self.read_response(&mut stream, &request.method, &timeouts, request.stream).await?;
+            let response = self.read_response(&mut stream, &request.method, &timeouts).await?;
 
             // Handle redirects if enabled
             if request.allow_redirects && Self::is_redirect_status(response.status) {
@@ -228,17 +228,16 @@ impl H1Client {
         stream: &mut TransportStream,
         method: &str,
         timeouts: &ClientTimeouts,
-        stream_response: bool,
     ) -> Result<Response, ProtocolError> {
         match stream {
             TransportStream::Tcp(tcp) => {
                 let mut reader = BufReader::new(tcp);
-                self.read_response_from_reader(&mut reader, method, timeouts, stream_response)
+                self.read_response_from_reader(&mut reader, method, timeouts)
                     .await
             }
             TransportStream::Tls(tls) => {
                 let mut reader = BufReader::new(tls);
-                self.read_response_from_reader(&mut reader, method, timeouts, stream_response)
+                self.read_response_from_reader(&mut reader, method, timeouts)
                     .await
             }
         }
@@ -249,7 +248,6 @@ impl H1Client {
         reader: &mut R,
         method: &str,
         timeouts: &ClientTimeouts,
-        stream_response: bool,
     ) -> Result<Response, ProtocolError> {
         loop {
             let mut status_line = String::new();
@@ -297,7 +295,7 @@ impl H1Client {
             }
 
             let (body, trailers) =
-                self.read_body(reader, &headers, method, status, timeouts, stream_response).await?;
+                self.read_body(reader, &headers, method, status, timeouts).await?;
 
             return Ok(Response {
                 status,
@@ -364,7 +362,6 @@ impl H1Client {
         method: &str,
         status: u16,
         timeouts: &ClientTimeouts,
-        stream_response: bool,
     ) -> Result<(Bytes, Vec<Header>), ProtocolError> {
         if !Self::response_has_body(method, status) {
             return Ok((Bytes::new(), Vec::new()));
@@ -378,7 +375,7 @@ impl H1Client {
         });
 
         if is_chunked {
-            self.read_chunked_body(reader, timeouts, stream_response).await
+            self.read_chunked_body(reader, timeouts).await
         } else {
             let content_length = headers
                 .iter()
@@ -386,20 +383,7 @@ impl H1Client {
                 .and_then(|h| h.value.as_ref())
                 .and_then(|v| v.parse::<usize>().ok());
 
-            if stream_response {
-                // For streaming, read only a small chunk or available data
-                const STREAM_CHUNK_SIZE: usize = 8192;
-                let read_size = content_length.map(|len| len.min(STREAM_CHUNK_SIZE)).unwrap_or(STREAM_CHUNK_SIZE);
-                let mut body = vec![0u8; read_size];
-
-                let bytes_read = with_timeout_result(timeouts.read, async {
-                    reader.read(&mut body).await.map_err(ProtocolError::Io)
-                })
-                .await?;
-
-                body.truncate(bytes_read);
-                Ok((Bytes::from(body), Vec::new()))
-            } else if let Some(length) = content_length {
+            if let Some(length) = content_length {
                 let mut body = vec![0u8; length];
                 with_timeout_result(timeouts.read, async {
                     reader
@@ -442,7 +426,6 @@ impl H1Client {
         &self,
         reader: &mut R,
         timeouts: &ClientTimeouts,
-        stream_response: bool,
     ) -> Result<(Bytes, Vec<Header>), ProtocolError> {
         let mut body = Vec::new();
         let mut trailers = Vec::new();
@@ -527,11 +510,6 @@ impl H1Client {
                     .map_err(ProtocolError::Io)
             })
             .await?;
-
-            // For streaming, return after reading the first chunk
-            if stream_response && !body.is_empty() {
-                break;
-            }
         }
 
         Ok((Bytes::from(body), trailers))

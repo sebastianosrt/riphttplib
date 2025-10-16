@@ -51,7 +51,7 @@ impl H3Client {
         let (stream_id, mut send_stream) =
             with_timeout_result(timeouts.connect, connection.create_request_stream()).await?;
 
-        let pseudo_headers = prepare_pseudo_headers(request, &request.target)?;
+        let pseudo_headers = prepare_pseudo_headers(request)?;
         let mut headers = merge_headers(pseudo_headers, request);
         ensure_user_agent(&mut headers);
 
@@ -151,7 +151,7 @@ impl H3Client {
             let timeouts = request.effective_timeouts(&self.timeouts);
             let mut connection = with_timeout_result(timeouts.connect, H3Connection::connect(&request.target)).await?;
             let stream_id = self.send_request_inner(&mut connection, &request, &timeouts).await?;
-            let response = self.read_response(&mut connection, stream_id, &timeouts, request.stream).await?;
+            let response = self.read_response(&mut connection, stream_id, &timeouts).await?;
 
             // Handle redirects if enabled
             if request.allow_redirects && Self::is_redirect_status(response.status) {
@@ -183,7 +183,6 @@ impl H3Client {
         connection: &mut H3Connection,
         stream_id: u32,
         timeouts: &ClientTimeouts,
-        stream_response: bool,
     ) -> Result<Response, ProtocolError> {
         let mut status: Option<u16> = None;
         let mut headers = Vec::new();
@@ -263,11 +262,6 @@ impl H3Client {
                 FrameType::H3(FrameTypeH3::Data) => {
                     body.extend_from_slice(&frame.payload);
                     with_timeout_result(timeouts.read, connection.handle_frame(&frame)).await?;
-
-                    // For streaming, return after reading the first data frame
-                    if stream_response && !body.is_empty() {
-                        break;
-                    }
                 }
                 _ => {
                     with_timeout_result(timeouts.read, connection.handle_frame(&frame)).await?;

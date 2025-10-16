@@ -206,7 +206,6 @@ pub struct Request {
     pub timeout: Option<ClientTimeouts>,
     pub allow_redirects: bool,
     pub proxies: Option<ProxySettings>,
-    pub stream: bool,
 }
 
 impl Request {
@@ -223,7 +222,6 @@ impl Request {
             timeout: None,
             allow_redirects: true,
             proxies: None,
-            stream: false,
         })
     }
 
@@ -349,11 +347,6 @@ impl Request {
 
     pub fn without_proxies(mut self) -> Self {
         self.proxies = None;
-        self
-    }
-
-    pub fn with_stream(mut self, stream: bool) -> Self {
-        self.stream = stream;
         self
     }
 

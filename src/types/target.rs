@@ -64,3 +64,10 @@ impl Target {
         self.url.as_ref()
     }
 }
+
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.url.as_str())
+    }
+}
