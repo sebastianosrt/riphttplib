@@ -147,7 +147,7 @@ impl H2Client {
         stream_id: u32,
         stream_response: bool,
     ) -> Result<Response, ProtocolError> {
-        let protocol_version = "HTTP/2.0".to_string();
+        let protocol = "HTTP/2.0".to_string();
         let mut status: Option<u16> = None;
         let mut headers = Vec::new();
         let mut body = Vec::new();
@@ -235,7 +235,7 @@ impl H2Client {
 
         Ok(Response {
             status,
-            protocol_version,
+            protocol,
             headers,
             body: Bytes::from(body),
             trailers,

@@ -9,8 +9,6 @@ use tokio::net::TcpStream;
 use tokio::time;
 use tokio_rustls::{client::TlsStream, TlsConnector};
 
-// pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
-
 #[derive(Debug)]
 pub struct NoCertificateVerification;
 
@@ -107,8 +105,8 @@ pub async fn create_tls_stream(
         .with_custom_certificate_verifier(std::sync::Arc::new(NoCertificateVerification))
         .with_no_client_auth();
 
-    // Enable HTTP/2 ALPN
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    // Enable HTTP/1.1 ALPN for H1 client
+    config.alpn_protocols = vec![b"http/1.1".to_vec()]; // TODO this might create issues
 
     let connector = TlsConnector::from(std::sync::Arc::new(config));
     let server_name = ServerName::try_from(server_name.to_string())
@@ -147,7 +145,6 @@ pub async fn create_h2_tls_stream(
         .with_no_client_auth();
 
     // HTTP/2 ALPN only
-    // TODO handle h2c
     config.alpn_protocols = vec![b"h2".to_vec()];
 
     let connector = TlsConnector::from(std::sync::Arc::new(config));
@@ -171,15 +168,6 @@ pub async fn create_h2_tls_stream(
     Ok(TransportStream::Tls(tls_stream))
 }
 
-pub async fn create_h2c_stream(
-    host: &str,
-    port: u16,
-    timeout: Option<Duration>,
-) -> io::Result<TransportStream> {
-    let stream = connect_tcp(host, port, timeout).await?;
-    Ok(TransportStream::Tcp(stream))
-}
-
 pub async fn create_stream(
     scheme: &str,
     host: &str,
@@ -190,7 +178,7 @@ pub async fn create_stream(
         "http" => create_tcp_stream(host, port, timeout).await,
         "https" => create_tls_stream(host, port, host, timeout).await,
         "h2" => create_h2_tls_stream(host, port, host, timeout).await,
-        "h2c" => create_h2c_stream(host, port, timeout).await,
+        "h2c" => create_tcp_stream(host, port, timeout).await,
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("Unsupported scheme: {}", scheme),

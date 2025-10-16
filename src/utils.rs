@@ -120,7 +120,7 @@ pub fn prepare_pseudo_headers(
             let path_value = if target.path_only() == "*" {
                 "*".to_string()
             } else {
-                target.path()
+                target.path().to_string()
             };
             if !pseudo_headers.iter().any(|h| h.name == ":path") {
                 pseudo_headers.push(Header::new(":path".to_string(), path_value));
@@ -139,7 +139,7 @@ pub fn prepare_pseudo_headers(
         }
         _ => {
             if !pseudo_headers.iter().any(|h| h.name == ":path") {
-                pseudo_headers.push(Header::new(":path".to_string(), target.path()));
+                pseudo_headers.push(Header::new(":path".to_string(), target.path().to_string()));
             }
             if !pseudo_headers.iter().any(|h| h.name == ":scheme") {
                 pseudo_headers.push(Header::new(
@@ -155,7 +155,7 @@ pub fn prepare_pseudo_headers(
         }
     }
 
-    Ok(normalize_headers(&pseudo_headers))
+    Ok(normalize_headers(&pseudo_headers)) // TODO normalization should happen only in Header::new
 }
 
 pub fn merge_headers(pseudo: Vec<Header>, request: &Request) -> Vec<Header> {
@@ -187,19 +187,6 @@ pub fn build_request(
             .with_optional_body(body)
             .with_trailers(trailers)
     })
-}
-
-pub fn build_request_with_target(
-    target: Target,
-    method: impl Into<String>,
-    headers: Vec<Header>,
-    body: Option<Bytes>,
-    trailers: Option<Vec<Header>>,
-) -> Request {
-    Request::with_target(target, method)
-        .with_headers(headers)
-        .with_optional_body(body)
-        .with_trailers(trailers)
 }
 
 pub fn ensure_user_agent(headers: &mut Vec<Header>) {

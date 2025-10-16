@@ -55,7 +55,7 @@ impl FrameH2 {
         Self::new(FrameTypeH2::Data, flags, stream_id, data)
     }
 
-    pub fn headers(
+    pub fn header(
         stream_id: u32,
         headers: &[Header],
         end_stream: bool,
@@ -71,6 +71,21 @@ impl FrameH2 {
 
         let payload = Self::encode_headers_hpack(headers)?;
         Ok(Self::new(FrameTypeH2::Headers, flags, stream_id, payload))
+    }
+
+    pub fn continuation(
+        stream_id: u32,
+        headers: &[Header],
+        end_headers: bool,
+    ) -> Result<Self, ProtocolError> {
+        let flags = if end_headers { END_HEADERS_FLAG } else { 0 };
+        let payload = Self::encode_headers_hpack(headers)?;
+        Ok(Self::new(
+            FrameTypeH2::Continuation,
+            flags,
+            stream_id,
+            payload,
+        ))
     }
 
     pub fn settings(settings: &[(u16, u32)]) -> Self {
@@ -124,21 +139,6 @@ impl FrameH2 {
         }
 
         Self::new(FrameTypeH2::GoAway, 0, 0, payload.freeze())
-    }
-
-    pub fn continuation(
-        stream_id: u32,
-        headers: &[Header],
-        end_headers: bool,
-    ) -> Result<Self, ProtocolError> {
-        let flags = if end_headers { END_HEADERS_FLAG } else { 0 };
-        let payload = Self::encode_headers_hpack(headers)?;
-        Ok(Self::new(
-            FrameTypeH2::Continuation,
-            flags,
-            stream_id,
-            payload,
-        ))
     }
 
     pub fn priority(

@@ -190,7 +190,7 @@ impl H3Client {
         let mut body = Vec::new();
         let mut trailers: Option<Vec<Header>> = None;
         let mut headers_received = false;
-        let protocol_version = HTTP_VERSION_3_0.to_string();
+        let protocol = HTTP_VERSION_3_0.to_string();
 
         loop {
             with_timeout_result(timeouts.read, connection.poll_control()).await?;
@@ -202,7 +202,11 @@ impl H3Client {
 
             let frame = match frame_opt {
                 Some(frame) => frame,
-                None => break,
+                None => {
+                    // Stream has ended, mark it as finished receiving
+                    let _ = connection.stream_finished_receiving(stream_id);
+                    break;
+                }
             };
 
             match &frame.frame_type {
@@ -280,9 +284,12 @@ impl H3Client {
             _ => None,
         };
 
+        // Clean up the closed stream
+        connection.remove_closed_stream(stream_id);
+
         Ok(Response {
             status,
-            protocol_version,
+            protocol,
             headers,
             body: Bytes::from(body),
             trailers,

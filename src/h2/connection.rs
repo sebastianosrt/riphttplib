@@ -2,7 +2,7 @@ use crate::h2::framing::{
     END_HEADERS_FLAG, END_STREAM_FLAG, FRAME_HEADER_SIZE, PADDED_FLAG, PRIORITY_FLAG,
 };
 use crate::h2::hpack::HpackCodec;
-use crate::stream::{create_h2_tls_stream, create_h2c_stream, TransportStream};
+use crate::stream::{create_h2_tls_stream, create_tcp_stream, TransportStream};
 use crate::types::{
     ClientTimeouts, FrameH2, FrameSink, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode,
     H2StreamErrorKind, Header, ProtocolError, Target,
@@ -99,22 +99,6 @@ pub struct StreamInfo {
     pending_headers: Option<PendingHeaderBlock>,
 }
 
-impl StreamInfo {
-    pub fn new(send_window: i32, recv_window: i32) -> Self {
-        Self {
-            state: StreamState::Idle,
-            send_window,
-            recv_window,
-            headers_sent: false,
-            final_headers_received: false,
-            end_stream_received: false,
-            end_stream_sent: false,
-            inbound_events: VecDeque::new(),
-            pending_headers: None,
-        }
-    }
-}
-
 pub struct H2Connection {
     pub stream: TransportStream,
     pub state: ConnectionState,
@@ -137,10 +121,26 @@ pub struct H2Connection {
     timeouts: ClientTimeouts,
 }
 
+impl StreamInfo {
+    pub fn new(send_window: i32, recv_window: i32) -> Self {
+        Self {
+            state: StreamState::Idle,
+            send_window,
+            recv_window,
+            headers_sent: false,
+            final_headers_received: false,
+            end_stream_received: false,
+            end_stream_sent: false,
+            inbound_events: VecDeque::new(),
+            pending_headers: None,
+        }
+    }
+}
+
 impl H2Connection {
     pub async fn connect(
         target: &Target,
-        timeouts: &ClientTimeouts,
+        timeouts: &ClientTimeouts, // TODO make optional
     ) -> Result<Self, ProtocolError> {
         let scheme = target.scheme();
         let is_tls = matches!(scheme, "https" | "h2");
@@ -164,7 +164,7 @@ impl H2Connection {
                 .await
                 .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?
         } else {
-            create_h2c_stream(host, port, timeouts.connect)
+            create_tcp_stream(host, port, timeouts.connect)
                 .await
                 .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?
         };
@@ -1304,17 +1304,17 @@ impl H2Connection {
         self.send_goaway(self.last_stream_id, 0, None).await
     }
 
-    pub fn generate_stream_ids(n: i32) -> Vec<u32> {
-        let mut stream_ids = Vec::with_capacity(n as usize);
-        let mut current_id = 1u32;
+    // pub fn generate_stream_ids(n: i32) -> Vec<u32> {
+    //     let mut stream_ids = Vec::with_capacity(n as usize);
+    //     let mut current_id = 1u32;
 
-        for _ in 0..n {
-            stream_ids.push(current_id);
-            current_id += 2;
-        }
+    //     for _ in 0..n {
+    //         stream_ids.push(current_id);
+    //         current_id += 2;
+    //     }
 
-        stream_ids
-    }
+    //     stream_ids
+    // }
 }
 
 #[async_trait(?Send)]

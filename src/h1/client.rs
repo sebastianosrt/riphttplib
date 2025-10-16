@@ -87,25 +87,38 @@ impl H1Client {
 
         // Handle proxy if configured
         if let Some(proxy_settings) = &request.proxies {
+            // First check for SOCKS proxy
+            if let Some(socks_proxy) = &proxy_settings.socks {
+                return with_timeout_result(connect_timeout, async move {
+                    if target.scheme() == "https" {
+                        crate::proxy::connect_through_proxy_https(socks_proxy, host, port, connect_timeout).await
+                    } else {
+                        crate::proxy::connect_through_proxy(socks_proxy, host, port, connect_timeout).await
+                    }
+                })
+                .await;
+            }
+
+            // Then check for HTTP/HTTPS proxy
             let proxy_url = if target.scheme() == "https" {
                 proxy_settings.https.as_ref().or(proxy_settings.http.as_ref())
             } else {
                 proxy_settings.http.as_ref()
             };
 
-            if let Some(proxy) = proxy_url {
-                let proxy_host = proxy.host_str()
-                    .ok_or_else(|| ProtocolError::InvalidTarget("Proxy missing host".to_string()))?;
-                let proxy_port = proxy.port_or_known_default()
-                    .ok_or_else(|| ProtocolError::InvalidTarget("Proxy missing port".to_string()))?;
-
-                let proxy_scheme = if scheme == "https" { "https" } else { "http" };
-                let proxy_host_owned = proxy_host.to_string();
+            if let Some(proxy_url) = proxy_url {
+                let proxy_config = if target.scheme() == "https" {
+                    crate::types::ProxyConfig::https(proxy_url.clone())
+                } else {
+                    crate::types::ProxyConfig::http(proxy_url.clone())
+                };
 
                 return with_timeout_result(connect_timeout, async move {
-                    create_stream(proxy_scheme, &proxy_host_owned, proxy_port, connect_timeout)
-                        .await
-                        .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))
+                    if target.scheme() == "https" {
+                        crate::proxy::connect_through_proxy_https(&proxy_config, host, port, connect_timeout).await
+                    } else {
+                        crate::proxy::connect_through_proxy(&proxy_config, host, port, connect_timeout).await
+                    }
                 })
                 .await;
             }
@@ -241,16 +254,31 @@ impl H1Client {
         loop {
             let mut status_line = String::new();
             let bytes = with_timeout_result(timeouts.read, async {
-                reader
-                    .read_line(&mut status_line)
-                    .await
-                    .map_err(ProtocolError::Io)
+                match reader.read_line(&mut status_line).await {
+                    Ok(bytes) => Ok(bytes),
+                    Err(e) => {
+                        // Handle UTF-8 and TLS close_notify errors gracefully
+                        if let Some(custom_error) = e.get_ref() {
+                            let error_msg = custom_error.to_string();
+                            if error_msg.contains("peer closed connection without sending TLS close_notify") ||
+                               error_msg.contains("stream did not contain valid UTF-8") {
+                                return Ok(0); // Treat as EOF
+                            }
+                        }
+                        if e.kind() == std::io::ErrorKind::InvalidData {
+                            return Ok(0); // Treat UTF-8 errors as EOF
+                        }
+                        Err(ProtocolError::Io(e))
+                    }
+                }
             })
             .await?;
 
             if bytes == 0 {
-                return Err(ProtocolError::InvalidResponse(
-                    "Unexpected EOF while reading status line".to_string(),
+                // If we get EOF on the first read, it might be due to TLS close_notify issue
+                // Try to continue with an empty response or return a more specific error
+                return Err(ProtocolError::ConnectionFailed(
+                    "Connection closed by server before receiving response".to_string(),
                 ));
             }
 
@@ -258,7 +286,7 @@ impl H1Client {
                 continue;
             }
 
-            let (status, protocol_version) = Self::parse_status_line(&status_line)?;
+            let (status, protocol) = Self::parse_status_line(&status_line)?;
             let headers = self.read_header_block(reader, timeouts).await?;
 
             if status < 200 {
@@ -273,7 +301,7 @@ impl H1Client {
 
             return Ok(Response {
                 status,
-                protocol_version,
+                protocol,
                 headers,
                 body,
                 trailers: if trailers.is_empty() {
@@ -293,10 +321,30 @@ impl H1Client {
         let mut headers = Vec::new();
         loop {
             let mut line = String::new();
-            with_timeout_result(timeouts.read, async {
-                reader.read_line(&mut line).await.map_err(ProtocolError::Io)
+            match with_timeout_result(timeouts.read, async {
+                match reader.read_line(&mut line).await {
+                    Ok(bytes) => Ok(bytes),
+                    Err(e) => {
+                        // Handle UTF-8 and TLS close_notify errors gracefully
+                        if let Some(custom_error) = e.get_ref() {
+                            let error_msg = custom_error.to_string();
+                            if error_msg.contains("peer closed connection without sending TLS close_notify") ||
+                               error_msg.contains("stream did not contain valid UTF-8") {
+                                return Ok(0); // Treat as EOF
+                            }
+                        }
+                        if e.kind() == std::io::ErrorKind::InvalidData {
+                            return Ok(0); // Treat UTF-8 errors as EOF
+                        }
+                        Err(ProtocolError::Io(e))
+                    }
+                }
             })
-            .await?;
+            .await {
+                Ok(0) => break, // EOF or error treated as EOF
+                Ok(_) => {},
+                Err(e) => return Err(e),
+            }
 
             if line.trim().is_empty() {
                 break;
@@ -363,11 +411,26 @@ impl H1Client {
                 Ok((Bytes::from(body), Vec::new()))
             } else {
                 let mut body = Vec::new();
-                with_timeout_result(timeouts.read, async {
-                    reader
-                        .read_to_end(&mut body)
-                        .await
-                        .map_err(ProtocolError::Io)
+                let _result = with_timeout_result(timeouts.read, async {
+                    // Use a custom reading loop to handle TLS close_notify gracefully
+                    loop {
+                        let mut buffer = [0u8; 8192];
+                        match reader.read(&mut buffer).await {
+                            Ok(0) => break, // Normal EOF
+                            Ok(n) => body.extend_from_slice(&buffer[..n]),
+                            Err(e) => {
+                                // Handle TLS close_notify issue gracefully
+                                if let Some(custom_error) = e.get_ref() {
+                                    if custom_error.to_string().contains("peer closed connection without sending TLS close_notify") {
+                                        // This is a common occurrence with HTTPS servers, treat as successful EOF
+                                        break;
+                                    }
+                                }
+                                return Err(ProtocolError::Io(e));
+                            }
+                        }
+                    }
+                    Ok(())
                 })
                 .await?;
                 Ok((Bytes::from(body), Vec::new()))
@@ -387,10 +450,23 @@ impl H1Client {
         loop {
             let mut size_line = String::new();
             with_timeout_result(timeouts.read, async {
-                reader
-                    .read_line(&mut size_line)
-                    .await
-                    .map_err(ProtocolError::Io)
+                match reader.read_line(&mut size_line).await {
+                    Ok(bytes) => Ok(bytes),
+                    Err(e) => {
+                        // Handle UTF-8 and TLS close_notify errors gracefully
+                        if let Some(custom_error) = e.get_ref() {
+                            let error_msg = custom_error.to_string();
+                            if error_msg.contains("peer closed connection without sending TLS close_notify") ||
+                               error_msg.contains("stream did not contain valid UTF-8") {
+                                return Ok(0); // Treat as EOF
+                            }
+                        }
+                        if e.kind() == std::io::ErrorKind::InvalidData {
+                            return Ok(0); // Treat UTF-8 errors as EOF
+                        }
+                        Err(ProtocolError::Io(e))
+                    }
+                }
             })
             .await?;
 
@@ -402,7 +478,23 @@ impl H1Client {
                 loop {
                     let mut line = String::new();
                     with_timeout_result(timeouts.read, async {
-                        reader.read_line(&mut line).await.map_err(ProtocolError::Io)
+                        match reader.read_line(&mut line).await {
+                            Ok(bytes) => Ok(bytes),
+                            Err(e) => {
+                                // Handle UTF-8 and TLS close_notify errors gracefully
+                                if let Some(custom_error) = e.get_ref() {
+                                    let error_msg = custom_error.to_string();
+                                    if error_msg.contains("peer closed connection without sending TLS close_notify") ||
+                                       error_msg.contains("stream did not contain valid UTF-8") {
+                                        return Ok(0); // Treat as EOF
+                                    }
+                                }
+                                if e.kind() == std::io::ErrorKind::InvalidData {
+                                    return Ok(0); // Treat UTF-8 errors as EOF
+                                }
+                                Err(ProtocolError::Io(e))
+                            }
+                        }
                     })
                     .await?;
 
@@ -488,12 +580,12 @@ impl H1Client {
             ));
         }
 
-        let protocol_version = parts[0].to_string();
+        let protocol = parts[0].to_string();
         let status_code = parts[1]
             .parse::<u16>()
             .map_err(|_| ProtocolError::InvalidResponse("Invalid status code".to_string()))?;
 
-        Ok((status_code, protocol_version))
+        Ok((status_code, protocol))
     }
 
     fn is_redirect_status(status: u16) -> bool {

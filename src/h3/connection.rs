@@ -706,13 +706,65 @@ impl H3Connection {
         Ok(())
     }
 
-    async fn handle_headers_frame(&mut self, _frame: &FrameH3) -> Result<(), ProtocolError> {
-        // In a real implementation, you'd decode the headers and update stream state
+    async fn handle_headers_frame(&mut self, frame: &FrameH3) -> Result<(), ProtocolError> {
+        // Update stream state to indicate headers have been received
+        if let Some(stream_info) = self.streams.get_mut(&frame.stream_id) {
+            match stream_info.state {
+                StreamState::Open => {
+                    // First headers frame (response headers)
+                    stream_info.state = StreamState::HalfClosedLocal;
+                }
+                StreamState::HalfClosedLocal => {
+                    // Could be trailers or continuation headers
+                }
+                _ => {
+                    return Err(ProtocolError::H3StreamError(
+                        H3StreamErrorKind::ProtocolViolation(format!(
+                            "Received headers on stream {} in invalid state {:?}",
+                            frame.stream_id, stream_info.state
+                        )),
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
-    async fn handle_data_frame(&mut self, _frame: &FrameH3) -> Result<(), ProtocolError> {
-        // In a real implementation, you'd handle the data and update stream state
+    async fn handle_data_frame(&mut self, frame: &FrameH3) -> Result<(), ProtocolError> {
+        // Validate stream state for data frames
+        if let Some(stream_info) = self.streams.get_mut(&frame.stream_id) {
+            match stream_info.state {
+                StreamState::Open | StreamState::HalfClosedLocal => {
+                    // Valid states to receive data
+                }
+                StreamState::HalfClosedRemote | StreamState::Closed => {
+                    return Err(ProtocolError::H3StreamError(
+                        H3StreamErrorKind::ProtocolViolation(format!(
+                            "Received data on stream {} in invalid state {:?}",
+                            frame.stream_id, stream_info.state
+                        )),
+                    ));
+                }
+                StreamState::Idle => {
+                    return Err(ProtocolError::H3StreamError(
+                        H3StreamErrorKind::ProtocolViolation(format!(
+                            "Received data on idle stream {}",
+                            frame.stream_id
+                        )),
+                    ));
+                }
+            }
+        } else {
+            return Err(ProtocolError::H3StreamError(
+                H3StreamErrorKind::ProtocolViolation(format!(
+                    "Received data on unknown stream {}",
+                    frame.stream_id
+                )),
+            ));
+        }
+
+        // Data frames don't change stream state by themselves
+        // Stream state changes occur when the stream is closed by the sender
         Ok(())
     }
 
@@ -733,6 +785,70 @@ impl H3Connection {
 
     pub async fn close(&mut self) -> Result<(), ProtocolError> {
         self.send_goaway(self.next_stream_id as u64).await
+    }
+
+    pub fn close_stream(&mut self, stream_id: u32) -> Result<(), ProtocolError> {
+        if let Some(stream_info) = self.streams.get_mut(&stream_id) {
+            match stream_info.state {
+                StreamState::Open => {
+                    stream_info.state = StreamState::HalfClosedLocal;
+                }
+                StreamState::HalfClosedRemote => {
+                    stream_info.state = StreamState::Closed;
+                }
+                StreamState::HalfClosedLocal | StreamState::Closed => {
+                    // Already closed or closing
+                }
+                StreamState::Idle => {
+                    return Err(ProtocolError::H3StreamError(
+                        H3StreamErrorKind::ProtocolViolation(format!(
+                            "Cannot close idle stream {}",
+                            stream_id
+                        )),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn stream_finished_receiving(&mut self, stream_id: u32) -> Result<(), ProtocolError> {
+        if let Some(stream_info) = self.streams.get_mut(&stream_id) {
+            match stream_info.state {
+                StreamState::Open => {
+                    stream_info.state = StreamState::HalfClosedRemote;
+                }
+                StreamState::HalfClosedLocal => {
+                    stream_info.state = StreamState::Closed;
+                }
+                StreamState::HalfClosedRemote | StreamState::Closed => {
+                    // Already closed from remote side
+                }
+                StreamState::Idle => {
+                    return Err(ProtocolError::H3StreamError(
+                        H3StreamErrorKind::ProtocolViolation(format!(
+                            "Stream {} was never opened",
+                            stream_id
+                        )),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_stream_state(&self, stream_id: u32) -> Option<StreamState> {
+        self.streams.get(&stream_id).map(|info| info.state.clone())
+    }
+
+    pub fn remove_closed_stream(&mut self, stream_id: u32) -> bool {
+        if let Some(stream_info) = self.streams.get(&stream_id) {
+            if matches!(stream_info.state, StreamState::Closed) {
+                self.streams.remove(&stream_id);
+                return true;
+            }
+        }
+        false
     }
 
     // Helper function to encode varint to Vec<u8>

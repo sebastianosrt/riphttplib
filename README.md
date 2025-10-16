@@ -8,9 +8,10 @@ features:
 - easy interface for frames building
 
 future implementations:
-- h2 single packet attack (h2SPA) https://portswigger.net/research/smashing-the-state-machine#single-packet-attack
+- h2 single packet attack (h2SPA) https://portswigger.net/research/smashing-the-state-machine#single-packet-attack https://github.com/nxenon/h2spacex
 - h2SPA++ https://flatt.tech/research/posts/beyond-the-limit-expanding-single-packet-race-condition-with-first-sequence-sync/
 - h1 last byte sync
+- think about features for request smuggling + pause based desync
 
 feel free to suggest me interesting features
 
