@@ -53,6 +53,18 @@ pub enum StreamState {
     Closed,
 }
 
+impl std::fmt::Display for StreamState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StreamState::Idle => write!(f, "idle"),
+            StreamState::Open => write!(f, "open"),
+            StreamState::HalfClosedLocal => write!(f, "half-closed (local)"),
+            StreamState::HalfClosedRemote => write!(f, "half-closed (remote)"),
+            StreamState::Closed => write!(f, "closed"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
     Headers {

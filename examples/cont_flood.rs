@@ -4,8 +4,8 @@ use riphttplib::h2::connection::{H2Connection};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let url = "https://localhost:8843";
-    // let url = "http://localhost:7777";
+    // let url = "https://localhost:8843";
+    let url = "http://localhost:7777";
     let timeout = ClientTimeouts::disabled();
 
     let req = Request::new(url, "GET")?;
@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stream_id = connection.create_stream().await?;
     
         FrameH2::header(stream_id, &headers, false, false)?
-            .chain(FrameH2::continuation(stream_id, &cont_header, false)?.repeat(1500))
+            .chain(FrameH2::continuation(stream_id, &cont_header, false)?.repeat(10))
             .chain(FrameH2::continuation(stream_id, &cont_header, true)?)
             .send(&mut connection).await?;
     }
