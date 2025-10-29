@@ -1,4 +1,4 @@
-use riphttplib::{Header, H1Client};
+use riphttplib::{H1Client, Header};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,11 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "First response: {} {} (frames: {})",
         first_response.protocol,
         first_response.status,
-        first_response
-            .frames
-            .as_ref()
-            .map(|f| f.len())
-            .unwrap_or(0)
+        first_response.frames.as_ref().map(|f| f.len()).unwrap_or(0)
     );
     if !first_response.cookies.is_empty() {
         println!("  cookies: {:?}", first_response.cookies);

@@ -8,13 +8,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _proxy_settings = ProxySettings::parse(
         Some("http://localhost:8081"),
         Some("http://localhost:8081"),
-        Some("socks5://127.0.0.1:9050")
+        Some("socks5://127.0.0.1:9050"),
     )?;
 
     // Example 1: HTTP Proxy
     println!("=== 1. HTTP Proxy Example ===");
-    let http_request = Request::new("http://httpbin.org/ip", "GET")?
-        .http_proxy("http://localhost:8081")?;
+    let http_request =
+        Request::new("http://httpbin.org/ip", "GET")?.http_proxy("http://localhost:8081")?;
 
     match client.send_request(http_request).await {
         Ok(response) => {
@@ -28,8 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example 2: HTTPS Proxy
     println!("\n=== 2. HTTPS Proxy Example ===");
-    let https_request = Request::new("https://httpbin.org/ip", "GET")?
-        .https_proxy("http://localhost:8081")?;
+    let https_request =
+        Request::new("https://httpbin.org/ip", "GET")?.https_proxy("http://localhost:8081")?;
 
     match client.send_request(https_request).await {
         Ok(response) => {
@@ -43,8 +43,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example 3: SOCKS5 Proxy (like Tor)
     println!("\n=== 3. SOCKS5 Proxy Example ===");
-    let socks5_request = Request::new("https://httpbin.org/ip", "GET")?
-        .socks5_proxy("socks5://127.0.0.1:9050")?;
+    let socks5_request =
+        Request::new("https://httpbin.org/ip", "GET")?.socks5_proxy("socks5://127.0.0.1:9050")?;
 
     match client.send_request(socks5_request).await {
         Ok(response) => {
@@ -58,12 +58,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example 4: SOCKS5 Proxy with Authentication
     println!("\n=== 4. SOCKS5 Proxy with Auth Example ===");
-    let socks5_auth_request = Request::new("https://httpbin.org/ip", "GET")?
-        .socks5_proxy_auth(
-            "socks5://localhost:9050",
-            "username".to_string(),
-            "password".to_string()
-        )?;
+    let socks5_auth_request = Request::new("https://httpbin.org/ip", "GET")?.socks5_proxy_auth(
+        "socks5://localhost:9050",
+        "username".to_string(),
+        "password".to_string(),
+    )?;
 
     match client.send_request(socks5_auth_request).await {
         Ok(response) => {
@@ -77,8 +76,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Example 5: SOCKS4 Proxy
     println!("\n=== 5. SOCKS4 Proxy Example ===");
-    let socks4_request = Request::new("https://httpbin.org/ip", "GET")?
-        .socks4_proxy("socks4://localhost:9050")?;
+    let socks4_request =
+        Request::new("https://httpbin.org/ip", "GET")?.socks4_proxy("socks4://localhost:9050")?;
 
     match client.send_request(socks4_request).await {
         Ok(response) => {

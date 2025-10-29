@@ -1,4 +1,8 @@
-use crate::types::{Header, ProtocolError, Request, Response, Target};
+use crate::h1::client::H1Client;
+use crate::h2::connection::H2Connection;
+use crate::stream::create_stream;
+use crate::types::protocol::HttpProtocol;
+use crate::types::{ClientTimeouts, Header, ProtocolError, Request, Response, Target};
 use bytes::Bytes;
 use std::future::Future;
 use std::time::Duration;
@@ -257,4 +261,110 @@ where
     } else {
         future.await
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProtocolDetection {
+    pub target: Target,
+    pub supported: Vec<HttpProtocol>,
+}
+
+const DETECTION_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn detection_timeouts() -> ClientTimeouts {
+    ClientTimeouts {
+        connect: Some(DETECTION_TIMEOUT),
+        read: Some(DETECTION_TIMEOUT),
+        write: Some(DETECTION_TIMEOUT),
+    }
+}
+
+fn push_if_missing(protocols: &mut Vec<HttpProtocol>, protocol: HttpProtocol) {
+    if !protocols.contains(&protocol) {
+        protocols.push(protocol);
+    }
+}
+
+async fn supports_http1(target: &Target) -> bool {
+    let scheme = target.scheme().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+
+    let host = match target.host() {
+        Some(host) => host,
+        None => return false,
+    };
+    let port = match target.port() {
+        Some(port) => port,
+        None => return false,
+    };
+
+    match create_stream(&scheme, host, port, Some(DETECTION_TIMEOUT)).await {
+        Ok(_stream) => true,
+        Err(_) => false,
+    }
+}
+
+async fn supports_http2(url: &str, scheme: &str) -> bool {
+    if !matches!(scheme, "http" | "https" | "h2" | "h2c") {
+        return false;
+    }
+
+    let timeouts = detection_timeouts();
+
+    match timeout(DETECTION_TIMEOUT, H2Connection::connect(url, &timeouts)).await {
+        Ok(Ok(_connection)) => true,
+        _ => false,
+    }
+}
+
+async fn supports_http3(target: &Target) -> bool {
+    let scheme = target.scheme().to_ascii_lowercase();
+    if scheme != "https" && scheme != "h3" {
+        return false;
+    }
+
+    let timeouts = detection_timeouts();
+    let request = match Request::new(target.as_str(), "HEAD")
+        .map(|req| req.allow_redirects(false).timeout(timeouts.clone()))
+    {
+        Ok(req) => req,
+        Err(_) => return false,
+    };
+
+    let client = H1Client::timeouts(timeouts);
+
+    match timeout(DETECTION_TIMEOUT, client.send_request(request)).await {
+        Ok(Ok(response)) => header_value(&response.headers, "alt-svc")
+            .map(|value| value.to_ascii_lowercase().contains("h3"))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+pub async fn detect_protocol(url: &str) -> Result<ProtocolDetection, ProtocolError> {
+    let mut target = parse_target(url)?;
+    let scheme = target.scheme().to_ascii_lowercase();
+    let mut supported = Vec::new();
+
+    if supports_http1(&target).await {
+        push_if_missing(&mut supported, HttpProtocol::Http1);
+    }
+
+    if supports_http2(url, &scheme).await {
+        if matches!(scheme.as_str(), "http" | "h2c") {
+            push_if_missing(&mut supported, HttpProtocol::H2C);
+        } else {
+            push_if_missing(&mut supported, HttpProtocol::Http2);
+        }
+    }
+
+    if supports_http3(&target).await {
+        push_if_missing(&mut supported, HttpProtocol::Http3);
+    }
+
+    target.protocols = supported.iter().cloned().collect();
+
+    Ok(ProtocolDetection { target, supported })
 }

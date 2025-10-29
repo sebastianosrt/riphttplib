@@ -1,6 +1,6 @@
-use riphttplib::{prepare_pseudo_headers, Request};
-use riphttplib::types::{ClientTimeouts, FrameH2};
 use riphttplib::h2::connection::{H2Connection, StreamEvent};
+use riphttplib::types::{ClientTimeouts, FrameH2};
+use riphttplib::{prepare_pseudo_headers, Request};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -14,7 +14,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut connection = H2Connection::connect(url, &timeout).await?;
     let stream_id = connection.create_stream().await?;
 
-    FrameH2::header(stream_id, &headers, true, true)?.send(&mut connection).await?;
+    FrameH2::header(stream_id, &headers, true, true)?
+        .send(&mut connection)
+        .await?;
 
     // let response_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     // let count_clone = response_count.clone();

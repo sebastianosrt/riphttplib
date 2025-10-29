@@ -3,7 +3,9 @@ use rustls::crypto::ring::default_provider;
 use rustls::pki_types::ServerName;
 use rustls::ClientConfig;
 use rustls::DigitallySignedStruct;
+use std::future::Future;
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time;
@@ -66,18 +68,57 @@ pub enum TransportStream {
     Tls(TlsStream<TcpStream>),
 }
 
-async fn connect_tcp(host: &str, port: u16, timeout: Option<Duration>) -> io::Result<TcpStream> {
-    if let Some(duration) = timeout {
-        match time::timeout(duration, TcpStream::connect((host, port))).await {
+const ALPN_HTTP11: &[u8] = b"http/1.1";
+const ALPN_H2: &[u8] = b"h2";
+
+fn build_alpn_list(protocols: Option<&[&[u8]]>) -> Vec<Vec<u8>> {
+    match protocols {
+        Some(list) if !list.is_empty() => list.iter().map(|p| p.to_vec()).collect(),
+        _ => vec![ALPN_HTTP11.to_vec()],
+    }
+}
+
+fn server_name_from_str(name: &str) -> io::Result<ServerName<'static>> {
+    ServerName::try_from(name.to_string()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Invalid server name: {}", name),
+        )
+    })
+}
+
+fn build_tls_connector(protocols: Option<&[&[u8]]>) -> TlsConnector {
+    let mut config = ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
+        .with_no_client_auth();
+
+    config.alpn_protocols = build_alpn_list(protocols);
+
+    TlsConnector::from(Arc::new(config))
+}
+
+async fn with_timeout<F, T>(
+    duration: Option<Duration>,
+    future: F,
+    timeout_message: &'static str,
+) -> io::Result<T>
+where
+    F: Future<Output = io::Result<T>>,
+{
+    if let Some(duration) = duration {
+        match time::timeout(duration, future).await {
             Ok(result) => result,
-            Err(_) => Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "TCP connection timed out",
-            )),
+            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, timeout_message)),
         }
     } else {
-        TcpStream::connect((host, port)).await
+        future.await
     }
+}
+
+async fn connect_tcp(host: &str, port: u16, timeout: Option<Duration>) -> io::Result<TcpStream> {
+    let connect_future = TcpStream::connect((host, port));
+    with_timeout(timeout, connect_future, "TCP connection timed out").await
 }
 
 pub async fn create_tcp_stream(
@@ -94,41 +135,22 @@ pub async fn create_tls_stream(
     port: u16,
     server_name: &str,
     timeout: Option<Duration>,
-    alpn_protocols: Option<Vec<Vec<u8>>>,
+    alpn_protocols: Option<&[&[u8]]>,
 ) -> io::Result<TransportStream> {
     // Ensure a crypto provider is installed (required for rustls >=0.23).
     let _ = default_provider().install_default();
     let tcp_stream = connect_tcp(host, port, timeout).await?;
 
-    // Create TLS configuration that skips certificate verification
-    let mut config = ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(std::sync::Arc::new(NoCertificateVerification))
-        .with_no_client_auth();
+    let connector = build_tls_connector(alpn_protocols);
+    let server_name = server_name_from_str(server_name)?;
 
-    match alpn_protocols {
-        Some(i) => config.alpn_protocols = i,
-        _ => config.alpn_protocols = vec![b"http/1.1".to_vec()],
-    }
+    let tls_stream = with_timeout(
+        timeout,
+        connector.connect(server_name, tcp_stream),
+        "TLS handshake timed out",
+    )
+    .await?;
 
-    let connector = TlsConnector::from(std::sync::Arc::new(config));
-    let server_name = ServerName::try_from(server_name.to_string())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid server name"))?;
-
-    let tls_stream_fut = connector.connect(server_name, tcp_stream);
-    let tls_stream = if let Some(duration) = timeout {
-        match time::timeout(duration, tls_stream_fut).await {
-            Ok(result) => result?,
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "TLS handshake timed out",
-                ))
-            }
-        }
-    } else {
-        tls_stream_fut.await?
-    };
     Ok(TransportStream::Tls(tls_stream))
 }
 
@@ -138,7 +160,7 @@ pub async fn create_h2_tls_stream(
     server_name: &str,
     timeout: Option<Duration>,
 ) -> io::Result<TransportStream> {
-    create_tls_stream(host, port, server_name, timeout, Some(vec![b"h2".to_vec()])).await
+    create_tls_stream(host, port, server_name, timeout, Some(&[ALPN_H2])).await
 }
 
 pub async fn create_h1_tls_stream(
@@ -147,14 +169,15 @@ pub async fn create_h1_tls_stream(
     server_name: &str,
     timeout: Option<Duration>,
 ) -> io::Result<TransportStream> {
-    create_tls_stream(
-        host,
-        port,
-        server_name,
-        timeout,
-        Some(vec![b"http/1.1".to_vec()]),
-    )
-    .await
+    create_tls_stream(host, port, server_name, timeout, Some(&[ALPN_HTTP11])).await
+}
+
+pub async fn create_h2c_stream(
+    host: &str,
+    port: u16,
+    timeout: Option<Duration>,
+) -> io::Result<TransportStream> {
+    create_tcp_stream(host, port, timeout).await
 }
 
 pub async fn create_stream(
@@ -167,7 +190,7 @@ pub async fn create_stream(
         "http" => create_tcp_stream(host, port, timeout).await,
         "https" => create_h1_tls_stream(host, port, host, timeout).await,
         "h2" => create_h2_tls_stream(host, port, host, timeout).await,
-        "h2c" => create_tcp_stream(host, port, timeout).await,
+        "h2c" => create_h2c_stream(host, port, timeout).await,
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("Unsupported scheme: {}", scheme),

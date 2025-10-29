@@ -24,3 +24,5 @@ tokio-test = "0.4"
 [lib]
 path = "src/lib.rs"
 
+[patch.crates-io]
+tokio-rustls = { path = "../vendor/tokio-rustls-0.26.4" }

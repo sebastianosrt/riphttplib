@@ -5,7 +5,7 @@ pub use state::{ConnectionState, StreamEvent, StreamInfo, StreamState};
 use crate::h2::consts::*;
 use crate::h2::framing::RstErrorCode;
 use crate::h2::hpack::HpackCodec;
-use crate::stream::{create_h2_tls_stream, create_tcp_stream, TransportStream};
+use crate::stream::{create_h2_tls_stream, create_h2c_stream, TransportStream};
 use crate::types::{
     ClientTimeouts, FrameH2, FrameSink, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode,
     H2StreamErrorKind, Header, ProtocolError, ResponseFrame,
@@ -70,7 +70,7 @@ impl H2Connection {
                 .await
                 .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?
         } else {
-            create_tcp_stream(host, port, timeouts.connect)
+            create_h2c_stream(host, port, timeouts.connect)
                 .await
                 .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?
         };

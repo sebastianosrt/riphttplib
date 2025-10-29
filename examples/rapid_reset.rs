@@ -1,7 +1,7 @@
-use riphttplib::{prepare_pseudo_headers, FrameBuilderExt, Request};
-use riphttplib::types::{Header, ClientTimeouts, FrameH2};
 use riphttplib::h2::connection::{H2Connection, StreamEvent};
 use riphttplib::h2::framing::RstErrorCode;
+use riphttplib::types::{ClientTimeouts, FrameH2, Header};
+use riphttplib::{prepare_pseudo_headers, FrameBuilderExt, Request};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,7 +17,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         print!("{}\n", stream_id);
         FrameH2::header(stream_id, &headers, false, true)?
             .chain(FrameH2::rst(stream_id, RstErrorCode::Cancel))
-            .send(&mut connection).await?;
+            .send(&mut connection)
+            .await?;
         stream_id = connection.create_stream().await?;
     }
 
@@ -29,8 +30,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Response {}: {:?}", count, event);
 
         match event {
-            StreamEvent::Headers { headers, end_stream, is_trailer } => {
-                println!("  → HEADERS response (end_stream: {}, is_trailer: {})", end_stream, is_trailer);
+            StreamEvent::Headers {
+                headers,
+                end_stream,
+                is_trailer,
+            } => {
+                println!(
+                    "  → HEADERS response (end_stream: {}, is_trailer: {})",
+                    end_stream, is_trailer
+                );
                 for header in headers {
                     println!("    {}: {:?}", header.name, header.value);
                 }
@@ -38,7 +46,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  → Stream ended with headers");
                 }
             }
-            StreamEvent::Data { payload, end_stream } => {
+            StreamEvent::Data {
+                payload,
+                end_stream,
+            } => {
                 println!("  → DATA response (end_stream: {})", end_stream);
                 println!("    Data: {}", String::from_utf8_lossy(&payload));
                 if *end_stream {
@@ -51,13 +62,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    match connection.read_response_options(
-        stream_id,
-        Some(std::time::Duration::from_secs(5)), // overall timeout
-        Some(std::time::Duration::from_millis(1000)), // event timeout
-        Some(10), // max events
-        Some(&event_handler)
-    ).await {
+    match connection
+        .read_response_options(
+            stream_id,
+            Some(std::time::Duration::from_secs(5)), // overall timeout
+            Some(std::time::Duration::from_millis(1000)), // event timeout
+            Some(10),                                // max events
+            Some(&event_handler),
+        )
+        .await
+    {
         Ok(_response) => {
             // Response handled by event_handler above
         }

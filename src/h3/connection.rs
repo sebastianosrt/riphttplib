@@ -103,10 +103,7 @@ impl H3Connection {
                 Ok(connecting) => match connecting.await {
                     Ok(connection) => return Ok(connection),
                     Err(e) => {
-                        last_error = Some(io::Error::new(
-                            io::ErrorKind::ConnectionRefused,
-                            e,
-                        ));
+                        last_error = Some(io::Error::new(io::ErrorKind::ConnectionRefused, e));
                     }
                 },
                 Err(e) => {
