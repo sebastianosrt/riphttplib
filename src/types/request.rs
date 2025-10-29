@@ -66,6 +66,16 @@ impl Request {
         self
     }
 
+    pub fn trailer(mut self, header: Header) -> Self {
+        match self.trailers {
+            Some(ref mut trailers) => trailers.push(header),
+            None => {
+                self.trailers = Some(vec![header]);
+            }
+        }
+        self
+    }
+
     pub fn trailers(mut self, trailers: Option<Vec<Header>>) -> Self {
         self.trailers = trailers;
         self

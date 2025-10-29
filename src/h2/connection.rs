@@ -5,7 +5,7 @@ pub use state::{ConnectionState, StreamEvent, StreamInfo, StreamState};
 use crate::h2::consts::*;
 use crate::h2::framing::RstErrorCode;
 use crate::h2::hpack::HpackCodec;
-use crate::stream::{create_h2_tls_stream, create_h2c_stream, TransportStream};
+use crate::stream::{create_stream, TransportStream};
 use crate::types::{
     ClientTimeouts, FrameH2, FrameSink, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode,
     H2StreamErrorKind, Header, ProtocolError, ResponseFrame,
@@ -66,11 +66,11 @@ impl H2Connection {
             .ok_or_else(|| ProtocolError::InvalidTarget("Target missing port".to_string()))?;
 
         let transport = if is_tls {
-            create_h2_tls_stream(host, port, host, timeouts.connect)
+            create_stream("h2", host, port, timeouts.connect)
                 .await
                 .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?
         } else {
-            create_h2c_stream(host, port, timeouts.connect)
+            create_stream("http", host, port, timeouts.connect)
                 .await
                 .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?
         };

@@ -133,7 +133,6 @@ pub async fn create_tcp_stream(
 pub async fn create_tls_stream(
     host: &str,
     port: u16,
-    server_name: &str,
     timeout: Option<Duration>,
     alpn_protocols: Option<&[&[u8]]>,
 ) -> io::Result<TransportStream> {
@@ -142,7 +141,7 @@ pub async fn create_tls_stream(
     let tcp_stream = connect_tcp(host, port, timeout).await?;
 
     let connector = build_tls_connector(alpn_protocols);
-    let server_name = server_name_from_str(server_name)?;
+    let server_name = server_name_from_str(host)?;
 
     let tls_stream = with_timeout(
         timeout,
@@ -154,32 +153,6 @@ pub async fn create_tls_stream(
     Ok(TransportStream::Tls(tls_stream))
 }
 
-pub async fn create_h2_tls_stream(
-    host: &str,
-    port: u16,
-    server_name: &str,
-    timeout: Option<Duration>,
-) -> io::Result<TransportStream> {
-    create_tls_stream(host, port, server_name, timeout, Some(&[ALPN_H2])).await
-}
-
-pub async fn create_h1_tls_stream(
-    host: &str,
-    port: u16,
-    server_name: &str,
-    timeout: Option<Duration>,
-) -> io::Result<TransportStream> {
-    create_tls_stream(host, port, server_name, timeout, Some(&[ALPN_HTTP11])).await
-}
-
-pub async fn create_h2c_stream(
-    host: &str,
-    port: u16,
-    timeout: Option<Duration>,
-) -> io::Result<TransportStream> {
-    create_tcp_stream(host, port, timeout).await
-}
-
 pub async fn create_stream(
     scheme: &str,
     host: &str,
@@ -188,9 +161,8 @@ pub async fn create_stream(
 ) -> io::Result<TransportStream> {
     match scheme {
         "http" => create_tcp_stream(host, port, timeout).await,
-        "https" => create_h1_tls_stream(host, port, host, timeout).await,
-        "h2" => create_h2_tls_stream(host, port, host, timeout).await,
-        "h2c" => create_h2c_stream(host, port, timeout).await,
+        "https" => create_tls_stream(host, port, timeout, Some(&[ALPN_HTTP11])).await,
+        "h2" => create_tls_stream(host, port, timeout, Some(&[ALPN_H2])).await,
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("Unsupported scheme: {}", scheme),

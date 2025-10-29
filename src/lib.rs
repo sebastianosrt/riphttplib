@@ -6,6 +6,7 @@ pub mod session;
 pub mod stream;
 pub mod types;
 pub mod utils;
+pub mod detector;
 
 pub use h1::client::H1Client;
 pub use h2::client::H2Client;
@@ -14,3 +15,4 @@ pub use session::*;
 pub use stream::*;
 pub use types::*;
 pub use utils::*;
+pub use detector::*;
