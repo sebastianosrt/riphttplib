@@ -1,6 +1,6 @@
+use super::error::ProtocolError;
 use async_trait::async_trait;
 use bytes::Bytes;
-use super::error::ProtocolError;
 
 #[derive(Debug, Clone)]
 pub enum FrameType {

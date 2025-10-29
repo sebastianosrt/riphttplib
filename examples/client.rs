@@ -1,13 +1,13 @@
 use riphttplib::h1::H1Client;
 use riphttplib::h2::H2Client;
 use riphttplib::h3::H3Client;
-use riphttplib::types::{Header, Request, ClientTimeouts};
+use riphttplib::types::{ClientTimeouts, Header, Protocol, Request};
 use std::time::Duration;
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let headers = vec![Header::new("accept".into(), "text/html".into())];
+    let headers = vec![Header::new("accept".into(), "text/html".into()), Header::new("trailers".into(), "trailer".into()), Header::new("TE".into(), "trailers".into())];
     let body = "test";
     let trailers = vec![Header::new("trailer".into(), "test".into())];
 
@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let client = H1Client::new();
-        let response = client.send_request(request.clone()).await?;
+        let response = client.response(request.clone()).await?;
 
         println!("HTTP/1.1");
     
@@ -38,10 +38,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // println!("\n{}", response.text());
         println!("\n{}", String::from_utf8_lossy(&response.body));
+        if let Some(frames) = &response.frames {
+            println!("Captured {} frame(s)", frames.len());
+        }
     }
     {        
         let client = H2Client::new();
-        let response = client.send_request(request.clone()).await?;
+        let response = client.response(request.clone()).await?;
      
         println!("\nHTTP/2");
     
@@ -50,38 +53,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", header);
         }
         println!("\n{}", response.text());
+        if let Some(frames) = &response.frames {
+            println!("Captured {} frame(s)", frames.len());
+        }
     }
     {
         println!("\nHTTP/3");
 
         let client = H3Client::new();
-        let response = client.send_request(request.clone()).await?;
+        let response = client.response(request.clone()).await?;
     
         println!("\n{} {}", response.protocol, response.status);
         for header in &response.headers {
             println!("{}", header);
         }
         println!("\n{}", response.text());
+        if let Some(frames) = &response.frames {
+            println!("Captured {} frame(s)", frames.len());
+        }
     }
-
-    // match client.send_request(request).await {
-    //     Ok(response) => {
-    //         println!("✓ Status: {}", response.status);
-    //         println!("✓ Protocol: {}", response.protocol);
-    //         println!("✓ Response length: {} bytes", response.body.len());
-
-    //         // Show a preview of the response
-    //         let response_text = String::from_utf8_lossy(&response.body);
-    //         if response_text.len() > 300 {
-    //             println!("✓ Response preview: {}...", &response_text[..300]);
-    //         } else {
-    //             println!("✓ Response: {}", response_text);
-    //         }
-    //     }
-    //     Err(e) => {
-    //         eprintln!("✗ Request failed: {}", e);
-    //     }
-    // }
 
     Ok(())
 }

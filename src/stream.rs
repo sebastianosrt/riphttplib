@@ -94,6 +94,7 @@ pub async fn create_tls_stream(
     port: u16,
     server_name: &str,
     timeout: Option<Duration>,
+    alpn_protocols: Option<Vec<Vec<u8>>>,
 ) -> io::Result<TransportStream> {
     // Ensure a crypto provider is installed (required for rustls >=0.23).
     let _ = default_provider().install_default();
@@ -105,8 +106,10 @@ pub async fn create_tls_stream(
         .with_custom_certificate_verifier(std::sync::Arc::new(NoCertificateVerification))
         .with_no_client_auth();
 
-    // Enable HTTP/1.1 ALPN for H1 client
-    config.alpn_protocols = vec![b"http/1.1".to_vec()]; // TODO this might create issues
+    match alpn_protocols {
+        Some(i) => config.alpn_protocols = i,
+        _ => config.alpn_protocols = vec![b"http/1.1".to_vec()],
+    }
 
     let connector = TlsConnector::from(std::sync::Arc::new(config));
     let server_name = ServerName::try_from(server_name.to_string())
@@ -135,37 +138,23 @@ pub async fn create_h2_tls_stream(
     server_name: &str,
     timeout: Option<Duration>,
 ) -> io::Result<TransportStream> {
-    let _ = default_provider().install_default();
-    let tcp_stream = connect_tcp(host, port, timeout).await?;
+    create_tls_stream(host, port, server_name, timeout, Some(vec![b"h2".to_vec()])).await
+}
 
-    // Create TLS configuration that skips certificate verification
-    let mut config = ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(std::sync::Arc::new(NoCertificateVerification))
-        .with_no_client_auth();
-
-    // HTTP/2 ALPN only
-    config.alpn_protocols = vec![b"h2".to_vec()];
-
-    let connector = TlsConnector::from(std::sync::Arc::new(config));
-    let server_name = ServerName::try_from(server_name.to_string())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid server name"))?;
-
-    let tls_stream_fut = connector.connect(server_name, tcp_stream);
-    let tls_stream = if let Some(duration) = timeout {
-        match time::timeout(duration, tls_stream_fut).await {
-            Ok(result) => result?,
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "TLS handshake timed out",
-                ))
-            }
-        }
-    } else {
-        tls_stream_fut.await?
-    };
-    Ok(TransportStream::Tls(tls_stream))
+pub async fn create_h1_tls_stream(
+    host: &str,
+    port: u16,
+    server_name: &str,
+    timeout: Option<Duration>,
+) -> io::Result<TransportStream> {
+    create_tls_stream(
+        host,
+        port,
+        server_name,
+        timeout,
+        Some(vec![b"http/1.1".to_vec()]),
+    )
+    .await
 }
 
 pub async fn create_stream(
@@ -176,7 +165,7 @@ pub async fn create_stream(
 ) -> io::Result<TransportStream> {
     match scheme {
         "http" => create_tcp_stream(host, port, timeout).await,
-        "https" => create_tls_stream(host, port, host, timeout).await,
+        "https" => create_h1_tls_stream(host, port, host, timeout).await,
         "h2" => create_h2_tls_stream(host, port, host, timeout).await,
         "h2c" => create_tcp_stream(host, port, timeout).await,
         _ => Err(io::Error::new(

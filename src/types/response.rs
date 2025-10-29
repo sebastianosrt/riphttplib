@@ -1,6 +1,12 @@
-use serde_json::Value;
+use super::{FrameH2, FrameH3, Header};
 use bytes::Bytes;
-use super::Header;
+use serde_json::Value;
+
+#[derive(Debug, Clone)]
+pub enum ResponseFrame {
+    Http2(FrameH2),
+    Http3(FrameH3),
+}
 
 #[derive(Debug, Clone)]
 pub struct Response {
@@ -9,6 +15,7 @@ pub struct Response {
     pub headers: Vec<Header>,
     pub body: Bytes,
     pub trailers: Option<Vec<Header>>,
+    pub frames: Option<Vec<ResponseFrame>>,
 }
 
 impl Response {

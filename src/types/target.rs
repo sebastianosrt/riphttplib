@@ -1,11 +1,11 @@
+use super::protocol::HttpProtocol;
 use std::collections::HashSet;
 use url::Url;
-use super::protocol::HttpProtocol;
 
 #[derive(Debug, Clone)]
 pub struct Target {
     pub url: Url,
-    pub protocols: HashSet<HttpProtocol>
+    pub protocols: HashSet<HttpProtocol>,
 }
 
 impl Target {
@@ -48,23 +48,45 @@ impl Target {
         self.url.path()
     }
 
-    pub fn path_query(&self) -> String {
-        let mut value = self.url.path().to_string();
-        if let Some(query) = self.url.query() {
-            value.push('?');
-            value.push_str(query);
-        }
-        if value.is_empty() {
-            value.push('/');
-        }
-        value
-    }
-
     pub fn as_str(&self) -> &str {
         self.url.as_ref()
     }
-}
 
+    // async fn test_http1_support(&self, timeouts: &ClientTimeouts) -> bool {
+    //     match Request::new(self.as_str(), "HEAD") {
+    //         Ok(request) => {
+    //             let client = H1Client::timeouts(timeouts.clone());
+    //             client.send_request(request).await.is_ok()
+    //         }
+    //         Err(_) => false,
+    //     }
+    // }
+
+    // async fn test_http2_support(&self, timeouts: &ClientTimeouts) -> bool {
+    //     match Request::new(self.as_str(), "HEAD") {
+    //         Ok(request) => {
+    //             let client = H2Client::timeouts(timeouts.clone());
+    //             client.send_request(request).await.is_ok()
+    //         }
+    //         Err(_) => false,
+    //     }
+    // }
+
+    // async fn test_http3_support(&self, timeouts: &ClientTimeouts) -> bool {
+    //     // Only test HTTP/3 for HTTPS targets (QUIC requires TLS)
+    //     if self.scheme() != "https" {
+    //         return false;
+    //     }
+
+    //     match Request::new(self.as_str(), "HEAD") {
+    //         Ok(request) => {
+    //             let client = H3Client::timeouts(timeouts.clone());
+    //             client.send_request(request).await.is_ok()
+    //         }
+    //         Err(_) => false,
+    //     }
+    // }
+}
 
 impl std::fmt::Display for Target {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

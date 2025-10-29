@@ -1,134 +1,23 @@
-use crate::h2::framing::{
-    END_HEADERS_FLAG, END_STREAM_FLAG, FRAME_HEADER_SIZE, PADDED_FLAG, PRIORITY_FLAG,
-};
+mod state;
+
+pub use state::{ConnectionState, StreamEvent, StreamInfo, StreamState};
+
+use crate::h2::consts::*;
+use crate::h2::framing::RstErrorCode;
 use crate::h2::hpack::HpackCodec;
 use crate::stream::{create_h2_tls_stream, create_tcp_stream, TransportStream};
 use crate::types::{
     ClientTimeouts, FrameH2, FrameSink, FrameType, FrameTypeH2, H2ConnectionErrorKind, H2ErrorCode,
-    H2StreamErrorKind, Header, ProtocolError,
+    H2StreamErrorKind, Header, ProtocolError, ResponseFrame,
 };
 use crate::utils::timeout_result;
 use crate::Response;
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
-use std::collections::{HashMap, VecDeque};
+use bytes::Bytes;
+use state::PendingHeaderBlock;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-// HTTP/2 Connection Preface (RFC 7540 Section 3.5)
-const CONNECTION_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-
-// HTTP/2 Settings Parameters (RFC 7540 Section 6.5.2)
-pub const SETTINGS_HEADER_TABLE_SIZE: u16 = 0x1;
-pub const SETTINGS_ENABLE_PUSH: u16 = 0x2;
-pub const SETTINGS_MAX_CONCURRENT_STREAMS: u16 = 0x3;
-pub const SETTINGS_INITIAL_WINDOW_SIZE: u16 = 0x4;
-pub const SETTINGS_MAX_FRAME_SIZE: u16 = 0x5;
-pub const SETTINGS_MAX_HEADER_LIST_SIZE: u16 = 0x6;
-
-// Default Settings Values
-pub const DEFAULT_HEADER_TABLE_SIZE: u32 = 0;
-pub const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 100;
-pub const DEFAULT_INITIAL_WINDOW_SIZE: u32 = 65535;
-pub const DEFAULT_MAX_FRAME_SIZE: u32 = 16384;
-pub const DEFAULT_MAX_HEADER_LIST_SIZE: u32 = 8192;
-
-// Connection States
-#[derive(Debug, Clone, PartialEq)]
-pub enum ConnectionState {
-    Idle,
-    Open,
-    HalfClosedLocal,
-    HalfClosedRemote,
-    Closed,
-}
-
-// Stream States (RFC 7540 Section 5.1)
-#[derive(Debug, Clone, PartialEq)]
-pub enum StreamState {
-    Idle,
-    Open,
-    HalfClosedLocal,
-    HalfClosedRemote,
-    Closed,
-}
-
-impl std::fmt::Display for StreamState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            StreamState::Idle => write!(f, "idle"),
-            StreamState::Open => write!(f, "open"),
-            StreamState::HalfClosedLocal => write!(f, "half-closed (local)"),
-            StreamState::HalfClosedRemote => write!(f, "half-closed (remote)"),
-            StreamState::Closed => write!(f, "closed"),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum StreamEvent {
-    Headers {
-        headers: Vec<Header>,
-        end_stream: bool,
-        is_trailer: bool,
-    },
-    Data {
-        payload: Bytes,
-        end_stream: bool,
-    },
-    RstStream {
-        error_code: H2ErrorCode,
-    },
-    // TODO maybe implement
-    // PushPromise {
-    //     promised_stream_id: u32,
-    //     headers: Vec<Header>,
-    // },
-    // Priority {
-    //     dependency: u32,
-    //     weight: u8,
-    //     exclusive: bool,
-    // },
-    // WindowUpdate {
-    //     increment: u32,
-    // },
-    // StreamError {
-    //     error: H2Error, // Your error type
-    // },
-    // StreamClosed, // Explicit close event
-}
-
-#[derive(Debug, Clone)]
-struct PendingHeaderBlock {
-    block: BytesMut,
-    end_stream: bool,
-}
-
-impl PendingHeaderBlock {
-    fn new() -> Self {
-        Self {
-            block: BytesMut::new(),
-            end_stream: false,
-        }
-    }
-
-    fn append(&mut self, fragment: &[u8]) {
-        self.block.extend_from_slice(fragment);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct StreamInfo {
-    pub state: StreamState,
-    pub send_window: i32,
-    pub recv_window: i32,
-    pub headers_sent: bool,
-    pub final_headers_received: bool,
-    pub end_stream_received: bool,
-    pub end_stream_sent: bool,
-    pub inbound_events: VecDeque<StreamEvent>,
-    pending_headers: Option<PendingHeaderBlock>,
-}
 
 pub struct H2Connection {
     pub stream: TransportStream,
@@ -150,22 +39,7 @@ pub struct H2Connection {
     pending_write_bytes: usize,
     auto_flush_bytes: Option<usize>,
     timeouts: ClientTimeouts,
-}
-
-impl StreamInfo {
-    pub fn new(send_window: i32, recv_window: i32) -> Self {
-        Self {
-            state: StreamState::Idle,
-            send_window,
-            recv_window,
-            headers_sent: false,
-            final_headers_received: false,
-            end_stream_received: false,
-            end_stream_sent: false,
-            inbound_events: VecDeque::new(),
-            pending_headers: None,
-        }
-    }
+    captured_frames: HashMap<u32, Vec<FrameH2>>,
 }
 
 impl H2Connection {
@@ -248,6 +122,7 @@ impl H2Connection {
             pending_write_bytes: 0,
             auto_flush_bytes: None,
             timeouts,
+            captured_frames: HashMap::new(),
         }
     }
 
@@ -611,22 +486,20 @@ impl H2Connection {
         Ok(())
     }
 
-    pub async fn send_rst(&mut self, stream_id: u32, error_code: u32) -> Result<(), ProtocolError> {
-        FrameH2::rst(stream_id, error_code).send(self).await?;
+    pub async fn send_rst(
+        &mut self,
+        stream_id: u32,
+        error_code: RstErrorCode,
+    ) -> Result<(), ProtocolError> {
+        FrameH2::rst(stream_id, error_code.into())
+            .send(self)
+            .await?;
 
         if let Some(stream) = self.streams.get_mut(&stream_id) {
             stream.state = StreamState::Closed;
         }
 
         Ok(())
-    }
-
-    pub async fn send_ping(&mut self, data: [u8; 8]) -> Result<(), ProtocolError> {
-        FrameH2::ping(data).send(self).await
-    }
-
-    pub async fn send_ping_ack(&mut self, data: [u8; 8]) -> Result<(), ProtocolError> {
-        FrameH2::ping_ack(data).send(self).await
     }
 
     pub async fn send_goaway(
@@ -806,7 +679,7 @@ impl H2Connection {
             if frame.payload.len() == 8 {
                 let mut data = [0u8; 8];
                 data.copy_from_slice(&frame.payload);
-                self.send_ping_ack(data).await?;
+                let _ = FrameH2::ping_ack(data).send(self).await;
             }
         }
         Ok(())
@@ -898,6 +771,7 @@ impl H2Connection {
     }
 
     async fn process_incoming_frame(&mut self, frame: FrameH2) -> Result<(), ProtocolError> {
+        self.record_frame(&frame);
         match &frame.frame_type {
             FrameType::H2(FrameTypeH2::Headers) => {
                 self.handle_headers_frame(&frame).await?;
@@ -1333,11 +1207,9 @@ impl H2Connection {
         self.send_goaway(self.last_stream_id, 0, None).await
     }
 
-    pub async fn read_response(
-        self: &mut Self,
-        stream_id: u32,
-    ) -> Result<Response, ProtocolError> {
-        self.read_response_options(stream_id, None, None, None, None).await
+    pub async fn read_response(self: &mut Self, stream_id: u32) -> Result<Response, ProtocolError> {
+        self.read_response_options(stream_id, None, None, None, None)
+            .await
     }
 
     pub async fn read_response_options(
@@ -1480,20 +1352,11 @@ impl H2Connection {
             headers,
             body: Bytes::from(body),
             trailers,
+            frames: self
+                .take_captured_frames(stream_id)
+                .map(|frames| frames.into_iter().map(ResponseFrame::Http2).collect()),
         })
     }
-
-    // pub fn generate_stream_ids(n: i32) -> Vec<u32> {
-    //     let mut stream_ids = Vec::with_capacity(n as usize);
-    //     let mut current_id = 1u32;
-
-    //     for _ in 0..n {
-    //         stream_ids.push(current_id);
-    //         current_id += 2;
-    //     }
-
-    //     stream_ids
-    // }
 }
 
 #[async_trait(?Send)]
@@ -1501,5 +1364,22 @@ impl FrameSink<FrameH2> for H2Connection {
     async fn write_frame(&mut self, frame: FrameH2) -> Result<(), ProtocolError> {
         let serialized = frame.serialize()?;
         self.queue_serialized_frame(serialized).await
+    }
+}
+
+impl H2Connection {
+    fn record_frame(&mut self, frame: &FrameH2) {
+        if frame.stream_id == 0 {
+            return;
+        }
+
+        self.captured_frames
+            .entry(frame.stream_id)
+            .or_default()
+            .push(frame.clone());
+    }
+
+    fn take_captured_frames(&mut self, stream_id: u32) -> Option<Vec<FrameH2>> {
+        self.captured_frames.remove(&stream_id)
     }
 }

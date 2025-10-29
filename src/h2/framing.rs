@@ -1,44 +1,11 @@
+mod rst;
+
+pub use rst::RstErrorCode;
+
+use crate::h2::consts::*;
 use crate::types::{FrameH2, FrameSink, FrameType, FrameTypeH2, Header, ProtocolError};
 use bytes::{BufMut, Bytes, BytesMut};
 use hpack::{Decoder, Encoder};
-
-// HTTP/2 Frame Format (RFC 7540 Section 4.1):
-//  0                   1                   2                   3
-//  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-// +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-// |                 Length (24)                   |
-// +---------------+---------------+---------------+
-// |   Type (8)    |   Flags (8)   |
-// +-+-+-----------+---------------+-------------------------------+
-// |R|                 Stream Identifier (31)                      |
-// +=+=============================================================+
-// |                   Frame Payload (0...)                      ...
-// +---------------------------------------------------------------+
-
-pub const FRAME_HEADER_SIZE: usize = 9;
-
-// HTTP/2 Frame Type Constants
-pub const DATA_FRAME_TYPE: u8 = 0x0;
-pub const HEADERS_FRAME_TYPE: u8 = 0x1;
-pub const PRIORITY_FRAME_TYPE: u8 = 0x2;
-pub const RST_STREAM_FRAME_TYPE: u8 = 0x3;
-pub const SETTINGS_FRAME_TYPE: u8 = 0x4;
-pub const PUSH_PROMISE_FRAME_TYPE: u8 = 0x5;
-pub const PING_FRAME_TYPE: u8 = 0x6;
-pub const GOAWAY_FRAME_TYPE: u8 = 0x7;
-pub const WINDOW_UPDATE_FRAME_TYPE: u8 = 0x8;
-pub const CONTINUATION_FRAME_TYPE: u8 = 0x9;
-
-// HTTP/2 Frame Flags
-pub const END_STREAM_FLAG: u8 = 0x1; // DATA, HEADERS
-pub const ACK_FLAG: u8 = 0x1; // SETTINGS, PING
-pub const END_HEADERS_FLAG: u8 = 0x4; // HEADERS, PUSH_PROMISE, CONTINUATION
-pub const PADDED_FLAG: u8 = 0x8; // DATA, HEADERS, PUSH_PROMISE
-pub const PRIORITY_FLAG: u8 = 0x20; // HEADERS
-
-// Maximum frame size (RFC 7540 Section 4.2)
-pub const DEFAULT_MAX_FRAME_SIZE: u32 = 16384; // 2^14
-pub const MAX_FRAME_SIZE_UPPER_BOUND: u32 = 16777215; // 2^24 - 1
 
 impl FrameH2 {
     pub fn new(frame_type: FrameTypeH2, flags: u8, stream_id: u32, payload: Bytes) -> Self {
@@ -112,9 +79,9 @@ impl FrameH2 {
         ))
     }
 
-    pub fn rst(stream_id: u32, error_code: u32) -> Self {
+    pub fn rst(stream_id: u32, error_code: RstErrorCode) -> Self {
         let mut payload = BytesMut::with_capacity(4);
-        payload.put_u32(error_code);
+        payload.put_u32(error_code.into());
         Self::new(FrameTypeH2::RstStream, 0, stream_id, payload.freeze())
     }
 

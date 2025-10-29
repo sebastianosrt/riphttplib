@@ -1,15 +1,14 @@
 use crate::h3::connection::H3Connection;
 use crate::types::{
     ClientTimeouts, FrameType, FrameTypeH3, H3StreamErrorKind, Header, Protocol, ProtocolError,
-    Request, Response,
+    Request, Response, ResponseFrame,
 };
 use crate::utils::{
-    ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers,
-    timeout_result, HTTP_VERSION_3_0, parse_target,
+    apply_redirect, ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers,
+    timeout_result, HTTP_VERSION_3_0,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
-use url::Url;
 
 pub struct H3Client {
     timeouts: ClientTimeouts,
@@ -35,11 +34,7 @@ impl H3Client {
         body: Option<Bytes>,
         trailers: Option<Vec<Header>>,
     ) -> Result<Request, ProtocolError> {
-        Request::new(target, method).map(|r| {
-            r.headers(headers)
-                .optional_body(body)
-                .trailers(trailers)
-        })
+        crate::utils::build_request(target, method, headers, body, trailers)
     }
 
     async fn send_request_inner(
@@ -140,38 +135,38 @@ impl H3Client {
         self.send_request_internal(request, 0).await
     }
 
-    fn send_request_internal<'a>(&'a self, mut request: Request, redirect_count: u32) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ProtocolError>> + 'a>> {
+    fn send_request_internal<'a>(
+        &'a self,
+        mut request: Request,
+        redirect_count: u32,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ProtocolError>> + 'a>>
+    {
         Box::pin(async move {
             const MAX_REDIRECTS: u32 = 30;
 
             if redirect_count > MAX_REDIRECTS {
-                return Err(ProtocolError::RequestFailed("Too many redirects".to_string()));
+                return Err(ProtocolError::RequestFailed(
+                    "Too many redirects".to_string(),
+                ));
             }
 
             let timeouts = request.effective_timeouts(&self.timeouts);
-            let mut connection = timeout_result(timeouts.connect, H3Connection::connect(&request.target)).await?;
-            let stream_id = self.send_request_inner(&mut connection, &request, &timeouts).await?;
-            let response = self.read_response(&mut connection, stream_id, &timeouts).await?;
+            let mut connection = timeout_result(
+                timeouts.connect,
+                H3Connection::connect_with_target(&request.target),
+            )
+            .await?;
+            let stream_id = self
+                .send_request_inner(&mut connection, &request, &timeouts)
+                .await?;
+            let response = self
+                .read_response(&mut connection, stream_id, &timeouts)
+                .await?;
 
-            // Handle redirects if enabled
-            if request.allow_redirects && Self::is_redirect_status(response.status) {
-                if let Some(location) = Self::get_location_header(&response.headers) {
-                    if let Ok(redirect_url) = Self::resolve_redirect_url(&request.target.url, &location) {
-                        let new_target = parse_target(redirect_url.as_str())?;
-                        request.target = new_target;
-
-                        // For 303 responses or GET/HEAD methods on 301/302, change method to GET
-                        if response.status == 303 ||
-                           ((response.status == 301 || response.status == 302) &&
-                            (request.method == "GET" || request.method == "HEAD")) {
-                            request.method = "GET".to_string();
-                            request.body = None;
-                            request.json = None;
-                        }
-
-                        return self.send_request_internal(request, redirect_count + 1).await;
-                    }
-                }
+            if apply_redirect(&mut request, &response)? {
+                return self
+                    .send_request_internal(request, redirect_count + 1)
+                    .await;
             }
 
             Ok(response)
@@ -190,14 +185,12 @@ impl H3Client {
         let mut trailers: Option<Vec<Header>> = None;
         let mut headers_received = false;
         let protocol = HTTP_VERSION_3_0.to_string();
+        let mut captured_frames = Vec::new();
 
         loop {
             timeout_result(timeouts.read, connection.poll_control()).await?;
-            let frame_opt = timeout_result(
-                timeouts.read,
-                connection.read_request_frame(stream_id),
-            )
-            .await?;
+            let frame_opt =
+                timeout_result(timeouts.read, connection.read_request_frame(stream_id)).await?;
 
             let frame = match frame_opt {
                 Some(frame) => frame,
@@ -207,6 +200,8 @@ impl H3Client {
                     break;
                 }
             };
+
+            captured_frames.push(ResponseFrame::Http3(frame.clone()));
 
             match &frame.frame_type {
                 FrameType::H3(FrameTypeH3::Headers) => {
@@ -287,32 +282,18 @@ impl H3Client {
             headers,
             body: Bytes::from(body),
             trailers,
+            frames: if captured_frames.is_empty() {
+                None
+            } else {
+                Some(captured_frames)
+            },
         })
-    }
-
-    fn is_redirect_status(status: u16) -> bool {
-        matches!(status, 300..=399)
-    }
-
-    fn get_location_header(headers: &[Header]) -> Option<String> {
-        headers
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("location"))
-            .and_then(|h| h.value.clone())
-    }
-
-    fn resolve_redirect_url(base_url: &Url, location: &str) -> Result<Url, url::ParseError> {
-        if location.starts_with("http://") || location.starts_with("https://") {
-            Url::parse(location)
-        } else {
-            base_url.join(location)
-        }
     }
 }
 
 #[async_trait(?Send)]
 impl Protocol for H3Client {
-    async fn send(&self, request: Request) -> Result<Response, ProtocolError> {
+    async fn response(&self, request: Request) -> Result<Response, ProtocolError> {
         self.send_request(request).await
     }
 }

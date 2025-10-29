@@ -2,10 +2,11 @@ use crate::h2::connection::H2Connection;
 use crate::types::{
     ClientTimeouts, H2StreamErrorKind, Header, Protocol, ProtocolError, Request, Response,
 };
-use crate::utils::{ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers, parse_target};
+use crate::utils::{
+    apply_redirect, ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers,
+};
 use async_trait::async_trait;
 use bytes::Bytes;
-use url::Url;
 
 pub struct H2Client {
     timeouts: ClientTimeouts,
@@ -31,11 +32,7 @@ impl H2Client {
         body: Option<Bytes>,
         trailers: Option<Vec<Header>>,
     ) -> Result<Request, ProtocolError> {
-        Request::new(target, method).map(|r| {
-            r.headers(headers)
-                .optional_body(body)
-                .trailers(trailers)
-        })
+        crate::utils::build_request(target, method, headers, body, trailers)
     }
 
     async fn send_request_inner(
@@ -103,68 +100,41 @@ impl H2Client {
         self.send_request_internal(request, 0).await
     }
 
-    fn send_request_internal<'a>(&'a self, mut request: Request, redirect_count: u32) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ProtocolError>> + 'a>> {
+    fn send_request_internal<'a>(
+        &'a self,
+        mut request: Request,
+        redirect_count: u32,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ProtocolError>> + 'a>>
+    {
         Box::pin(async move {
             const MAX_REDIRECTS: u32 = 30;
 
             if redirect_count > MAX_REDIRECTS {
-                return Err(ProtocolError::RequestFailed("Too many redirects".to_string()));
+                return Err(ProtocolError::RequestFailed(
+                    "Too many redirects".to_string(),
+                ));
             }
 
             let timeouts = request.effective_timeouts(&self.timeouts);
-            let mut connection = H2Connection::connect(request.target.url.as_str(), &timeouts).await?;
+            let mut connection =
+                H2Connection::connect(request.target.url.as_str(), &timeouts).await?;
             let stream_id = self.send_request_inner(&mut connection, &request).await?;
             let response = connection.read_response(stream_id).await?;
 
-            // Handle redirects if enabled
-            if request.allow_redirects && Self::is_redirect_status(response.status) {
-                if let Some(location) = Self::get_location_header(&response.headers) {
-                    if let Ok(redirect_url) = Self::resolve_redirect_url(&request.target.url, &location) {
-                        let new_target = parse_target(redirect_url.as_str())?;
-                        request.target = new_target;
-
-                        // For 303 responses or GET/HEAD methods on 301/302, change method to GET
-                        if response.status == 303 ||
-                           ((response.status == 301 || response.status == 302) &&
-                            (request.method == "GET" || request.method == "HEAD")) {
-                            request.method = "GET".to_string();
-                            request.body = None;
-                            request.json = None;
-                        }
-
-                        return self.send_request_internal(request, redirect_count + 1).await;
-                    }
-                }
+            if apply_redirect(&mut request, &response)? {
+                return self
+                    .send_request_internal(request, redirect_count + 1)
+                    .await;
             }
 
             Ok(response)
         })
     }
-
-
-    fn is_redirect_status(status: u16) -> bool {
-        matches!(status, 300..=399)
-    }
-
-    fn get_location_header(headers: &[Header]) -> Option<String> {
-        headers
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("location"))
-            .and_then(|h| h.value.clone())
-    }
-
-    fn resolve_redirect_url(base_url: &Url, location: &str) -> Result<Url, url::ParseError> {
-        if location.starts_with("http://") || location.starts_with("https://") {
-            Url::parse(location)
-        } else {
-            base_url.join(location)
-        }
-    }
 }
 
 #[async_trait(?Send)]
 impl Protocol for H2Client {
-    async fn send(&self, request: Request) -> Result<Response, ProtocolError> {
+    async fn response(&self, request: Request) -> Result<Response, ProtocolError> {
         self.send_request(request).await
     }
 }

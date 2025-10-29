@@ -1,12 +1,11 @@
-
 use bytes::Bytes;
 use serde_json::Value;
 use std::time::Duration;
 use url::{form_urlencoded, Url};
 
-use crate::utils::parse_target;
-use super::{Target, Header};
 use super::error::ProtocolError;
+use super::{Header, Target};
+use crate::utils::parse_target;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProxyType {
@@ -93,9 +92,21 @@ impl ProxySettingsBuilder {
 
     pub fn build(self) -> Result<ProxySettings, url::ParseError> {
         Ok(ProxySettings {
-            http: if let Some(url_str) = self.http { Some(Url::parse(&url_str)?) } else { None },
-            https: if let Some(url_str) = self.https { Some(Url::parse(&url_str)?) } else { None },
-            socks: if let Some(url_str) = self.socks { Some(ProxyConfig::socks5(Url::parse(&url_str)?)) } else { None },
+            http: if let Some(url_str) = self.http {
+                Some(Url::parse(&url_str)?)
+            } else {
+                None
+            },
+            https: if let Some(url_str) = self.https {
+                Some(Url::parse(&url_str)?)
+            } else {
+                None
+            },
+            socks: if let Some(url_str) = self.socks {
+                Some(ProxyConfig::socks5(Url::parse(&url_str)?))
+            } else {
+                None
+            },
         })
     }
 }
@@ -105,11 +116,27 @@ impl ProxySettings {
         Self::default()
     }
 
-    pub fn from_strings(http: Option<String>, https: Option<String>, socks: Option<String>) -> Result<Self, url::ParseError> {
+    pub fn from_strings(
+        http: Option<String>,
+        https: Option<String>,
+        socks: Option<String>,
+    ) -> Result<Self, url::ParseError> {
         Ok(Self {
-            http: if let Some(url_str) = http { Some(Url::parse(&url_str)?) } else { None },
-            https: if let Some(url_str) = https { Some(Url::parse(&url_str)?) } else { None },
-            socks: if let Some(url_str) = socks { Some(ProxyConfig::socks5(Url::parse(&url_str)?)) } else { None },
+            http: if let Some(url_str) = http {
+                Some(Url::parse(&url_str)?)
+            } else {
+                None
+            },
+            https: if let Some(url_str) = https {
+                Some(Url::parse(&url_str)?)
+            } else {
+                None
+            },
+            socks: if let Some(url_str) = socks {
+                Some(ProxyConfig::socks5(Url::parse(&url_str)?))
+            } else {
+                None
+            },
         })
     }
 
@@ -151,17 +178,36 @@ macro_rules! proxy_settings {
         ProxySettings::new().https($https)?.socks($socks)
     };
     (http = $http:expr, https = $https:expr, socks = $socks:expr) => {
-        ProxySettings::new().http($http)?.https($https)?.socks($socks)
+        ProxySettings::new()
+            .http($http)?
+            .https($https)?
+            .socks($socks)
     };
 }
 
 // Simple struct initialization with string parsing
 impl ProxySettings {
-    pub fn parse(http: Option<&str>, https: Option<&str>, socks: Option<&str>) -> Result<Self, url::ParseError> {
+    pub fn parse(
+        http: Option<&str>,
+        https: Option<&str>,
+        socks: Option<&str>,
+    ) -> Result<Self, url::ParseError> {
         Ok(Self {
-            http: if let Some(url_str) = http { Some(Url::parse(url_str)?) } else { None },
-            https: if let Some(url_str) = https { Some(Url::parse(url_str)?) } else { None },
-            socks: if let Some(url_str) = socks { Some(ProxyConfig::socks5(Url::parse(url_str)?)) } else { None },
+            http: if let Some(url_str) = http {
+                Some(Url::parse(url_str)?)
+            } else {
+                None
+            },
+            https: if let Some(url_str) = https {
+                Some(Url::parse(url_str)?)
+            } else {
+                None
+            },
+            socks: if let Some(url_str) = socks {
+                Some(ProxyConfig::socks5(Url::parse(url_str)?))
+            } else {
+                None
+            },
         })
     }
 }
@@ -324,9 +370,15 @@ impl Request {
         Ok(self)
     }
 
-    pub fn socks5_proxy_auth<S: AsRef<str>>(mut self, proxy_url: S, username: String, password: String) -> Result<Self, url::ParseError> {
+    pub fn socks5_proxy_auth<S: AsRef<str>>(
+        mut self,
+        proxy_url: S,
+        username: String,
+        password: String,
+    ) -> Result<Self, url::ParseError> {
         let mut proxies = self.proxies.unwrap_or_default();
-        proxies.socks = Some(ProxyConfig::socks5(Url::parse(proxy_url.as_ref())?).auth(username, password));
+        proxies.socks =
+            Some(ProxyConfig::socks5(Url::parse(proxy_url.as_ref())?).auth(username, password));
         self.proxies = Some(proxies);
         Ok(self)
     }
@@ -338,9 +390,15 @@ impl Request {
         Ok(self)
     }
 
-    pub fn socks4_proxy_auth<S: AsRef<str>>(mut self, proxy_url: S, username: String) -> Result<Self, url::ParseError> {
+    pub fn socks4_proxy_auth<S: AsRef<str>>(
+        mut self,
+        proxy_url: S,
+        username: String,
+    ) -> Result<Self, url::ParseError> {
         let mut proxies = self.proxies.unwrap_or_default();
-        proxies.socks = Some(ProxyConfig::socks4(Url::parse(proxy_url.as_ref())?).auth(username, String::new()));
+        proxies.socks = Some(
+            ProxyConfig::socks4(Url::parse(proxy_url.as_ref())?).auth(username, String::new()),
+        );
         self.proxies = Some(proxies);
         Ok(self)
     }
@@ -370,15 +428,19 @@ impl Request {
             }
         } else {
             // Estimate capacity to reduce allocations
-            let estimated_param_size: usize = self.params.iter()
+            let estimated_param_size: usize = self
+                .params
+                .iter()
                 .map(|(k, v)| k.len() + v.len() + 3) // +3 for =, &, and URL encoding overhead
                 .sum();
 
-            let total_capacity = path.len() +
-                existing_query.map(|q| q.len() + 1).unwrap_or(0) +
-                estimated_param_size + 10; // +10 buffer for URL encoding
+            let total_capacity = path.len()
+                + existing_query.map(|q| q.len() + 1).unwrap_or(0)
+                + estimated_param_size
+                + 10; // +10 buffer for URL encoding
 
-            let mut serializer = form_urlencoded::Serializer::new(String::with_capacity(estimated_param_size));
+            let mut serializer =
+                form_urlencoded::Serializer::new(String::with_capacity(estimated_param_size));
             for (key, value) in &self.params {
                 serializer.append_pair(key, value);
             }
@@ -404,14 +466,26 @@ impl Request {
 
     pub fn effective_headers(&self) -> Vec<Header> {
         // Pre-calculate capacity to avoid reallocations
-        let additional_headers =
-            (if self.json.is_some() && !Self::has_header_case_insensitive(&self.headers, "content-type") { 1 } else { 0 }) +
-            (if !self.cookies.is_empty() && !Self::has_header_case_insensitive(&self.headers, "cookie") { 1 } else { 0 });
+        let additional_headers = (if self.json.is_some()
+            && !Self::has_header_case_insensitive(&self.headers, "content-type")
+        {
+            1
+        } else {
+            0
+        }) + (if !self.cookies.is_empty()
+            && !Self::has_header_case_insensitive(&self.headers, "cookie")
+        {
+            1
+        } else {
+            0
+        });
 
         let mut headers = Vec::with_capacity(self.headers.len() + additional_headers);
         headers.extend_from_slice(&self.headers);
 
-        if self.json.is_some() && !Self::has_header_case_insensitive(&headers, crate::utils::CONTENT_TYPE_HEADER) {
+        if self.json.is_some()
+            && !Self::has_header_case_insensitive(&headers, crate::utils::CONTENT_TYPE_HEADER)
+        {
             headers.push(Header::new(
                 crate::utils::CONTENT_TYPE_HEADER.to_string(),
                 crate::utils::APPLICATION_JSON.to_string(),
@@ -420,7 +494,10 @@ impl Request {
 
         if let Some(cookie_value) = self.cookie_header_value() {
             if !Self::has_header_case_insensitive(&headers, crate::utils::COOKIE_HEADER) {
-                headers.push(Header::new(crate::utils::COOKIE_HEADER.to_string(), cookie_value));
+                headers.push(Header::new(
+                    crate::utils::COOKIE_HEADER.to_string(),
+                    cookie_value,
+                ));
             }
         }
 
@@ -436,7 +513,9 @@ impl Request {
             None
         } else {
             // Pre-calculate capacity to avoid reallocations
-            let estimated_size: usize = self.cookies.iter()
+            let estimated_size: usize = self
+                .cookies
+                .iter()
                 .map(|(name, value)| name.len() + value.len() + 3) // +3 for "=", "; "
                 .sum();
 

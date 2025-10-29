@@ -1,4 +1,4 @@
-use crate::types::{Header, ProtocolError, Request, Target};
+use crate::types::{Header, ProtocolError, Request, Response, Target};
 use bytes::Bytes;
 use std::future::Future;
 use std::time::Duration;
@@ -85,9 +85,7 @@ pub fn normalize_headers(headers: &[Header]) -> Vec<Header> {
         .collect()
 }
 
-pub fn prepare_pseudo_headers(
-    request: &Request,
-) -> Result<Vec<Header>, ProtocolError> {
+pub fn prepare_pseudo_headers(request: &Request) -> Result<Vec<Header>, ProtocolError> {
     let mut pseudo_headers: Vec<Header> = request
         .headers
         .iter()
@@ -138,7 +136,10 @@ pub fn prepare_pseudo_headers(
         }
         _ => {
             if !pseudo_headers.iter().any(|h| h.name == ":path") {
-                pseudo_headers.push(Header::new(":path".to_string(), request.target.path().to_string()));
+                pseudo_headers.push(Header::new(
+                    ":path".to_string(),
+                    request.target.path().to_string(),
+                ));
             }
             if !pseudo_headers.iter().any(|h| h.name == ":scheme") {
                 pseudo_headers.push(Header::new(
@@ -181,11 +182,7 @@ pub fn build_request(
     body: Option<Bytes>,
     trailers: Option<Vec<Header>>,
 ) -> Result<Request, ProtocolError> {
-    Request::new(target, method).map(|r| {
-        r.headers(headers)
-            .optional_body(body)
-            .trailers(trailers)
-    })
+    Request::new(target, method).map(|r| r.headers(headers).optional_body(body).trailers(trailers))
 }
 
 pub fn ensure_user_agent(headers: &mut Vec<Header>) {
@@ -200,10 +197,55 @@ pub fn ensure_user_agent(headers: &mut Vec<Header>) {
     }
 }
 
-pub async fn timeout_result<F, T>(
-    duration: Option<Duration>,
-    future: F,
-) -> Result<T, ProtocolError>
+pub fn header_value<'a>(headers: &'a [Header], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case(name))
+        .and_then(|h| h.value.as_deref())
+}
+
+pub fn is_redirect_status(status: u16) -> bool {
+    (300..400).contains(&status)
+}
+
+pub fn resolve_redirect_url(base_url: &Url, location: &str) -> Result<Url, url::ParseError> {
+    if location.starts_with("http://") || location.starts_with("https://") {
+        Url::parse(location)
+    } else {
+        base_url.join(location)
+    }
+}
+
+pub fn apply_redirect(request: &mut Request, response: &Response) -> Result<bool, ProtocolError> {
+    if !request.allow_redirects || !is_redirect_status(response.status) {
+        return Ok(false);
+    }
+
+    let location = match header_value(&response.headers, "location") {
+        Some(value) => value,
+        None => return Ok(false),
+    };
+
+    let redirect_url = match resolve_redirect_url(&request.target.url, location) {
+        Ok(url) => url,
+        Err(_) => return Ok(false),
+    };
+
+    request.target = parse_target(redirect_url.as_str())?;
+
+    if response.status == 303
+        || ((response.status == 301 || response.status == 302)
+            && matches!(request.method.as_str(), "GET" | "HEAD"))
+    {
+        request.method = "GET".to_string();
+        request.body = None;
+        request.json = None;
+    }
+
+    Ok(true)
+}
+
+pub async fn timeout_result<F, T>(duration: Option<Duration>, future: F) -> Result<T, ProtocolError>
 where
     F: Future<Output = Result<T, ProtocolError>>,
 {

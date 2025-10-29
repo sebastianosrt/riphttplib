@@ -1,3 +1,8 @@
+mod state;
+
+pub use state::{ConnectionState, StreamInfo, StreamState};
+
+use crate::h3::consts::*;
 use crate::h3::framing::{
     SETTINGS_MAX_FIELD_SECTION_SIZE, SETTINGS_QPACK_BLOCKED_STREAMS,
     SETTINGS_QPACK_MAX_TABLE_CAPACITY,
@@ -7,11 +12,13 @@ use crate::stream::NoCertificateVerification;
 use crate::types::{
     FrameH3, FrameSink, FrameType, FrameTypeH3, H3StreamErrorKind, Header, ProtocolError, Target,
 };
+use crate::utils::parse_target;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use quinn::{ClientConfig as QuinnClientConfig, Connection, Endpoint, RecvStream, SendStream};
 use std::collections::HashMap;
 use std::io;
+use std::net::SocketAddr;
 
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::crypto::ring::default_provider;
@@ -19,36 +26,6 @@ use rustls::ClientConfig;
 use std::sync::Arc;
 use tokio::net::lookup_host;
 use tokio::time::{timeout, Duration};
-
-// Default HTTP/3 Settings Values
-pub const DEFAULT_QPACK_MAX_TABLE_CAPACITY: u64 = 0;
-pub const DEFAULT_MAX_FIELD_SECTION_SIZE: u64 = 8192;
-pub const DEFAULT_QPACK_BLOCKED_STREAMS: u64 = 0;
-
-// Connection States
-#[derive(Debug, Clone, PartialEq)]
-pub enum ConnectionState {
-    Idle,
-    Open,
-    Closed,
-}
-
-// Stream States (Client perspective)
-#[derive(Debug, Clone, PartialEq)]
-pub enum StreamState {
-    Idle,
-    Open,
-    HalfClosedLocal,
-    HalfClosedRemote,
-    Closed,
-}
-
-pub struct StreamInfo {
-    pub state: StreamState,
-    // Store the receiving side for this HTTP/3 request stream.
-    pub recv_stream: RecvStream,
-    pub recv_buf: BytesMut,
-}
 
 enum QpackStreamRole {
     Encoder,
@@ -79,8 +56,6 @@ impl H3Connection {
     ) -> io::Result<Connection> {
         let _ = default_provider().install_default();
 
-        let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())?;
-
         let mut rustls_config = ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
@@ -90,31 +65,74 @@ impl H3Connection {
         let quic_crypto = QuicClientConfig::try_from(rustls_config)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         let client_config = QuinnClientConfig::new(Arc::new(quic_crypto));
-        endpoint.set_default_client_config(client_config);
 
-        // Resolve hostname to addresses (DNS) and pick the first
-        let mut addrs = lookup_host((host, port)).await.map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("DNS lookup failed for {}:{}: {}", host, port, e),
-            )
-        })?;
-        let addr = addrs.next().ok_or_else(|| {
-            io::Error::new(
+        // Resolve hostname to addresses (DNS)
+        let resolved_addrs: Vec<SocketAddr> = lookup_host((host, port))
+            .await
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("DNS lookup failed for {}:{}: {}", host, port, e),
+                )
+            })?
+            .collect();
+
+        if resolved_addrs.is_empty() {
+            return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!("No addresses found for {}:{}", host, port),
-            )
-        })?;
+            ));
+        }
 
-        let connecting = endpoint
-            .connect(addr, server_name)
-            .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))?;
-        connecting
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e))
+        let mut addrs = resolved_addrs;
+        addrs.sort_by_key(|addr| if addr.is_ipv4() { 0 } else { 1 });
+
+        let mut last_error: Option<io::Error> = None;
+
+        for addr in addrs {
+            let bind_addr = if addr.is_ipv4() {
+                SocketAddr::from(([0, 0, 0, 0], 0))
+            } else {
+                SocketAddr::from(([0u16; 8], 0))
+            };
+
+            let mut endpoint = Endpoint::client(bind_addr)?;
+            endpoint.set_default_client_config(client_config.clone());
+
+            match endpoint.connect(addr, server_name) {
+                Ok(connecting) => match connecting.await {
+                    Ok(connection) => return Ok(connection),
+                    Err(e) => {
+                        last_error = Some(io::Error::new(
+                            io::ErrorKind::ConnectionRefused,
+                            e,
+                        ));
+                    }
+                },
+                Err(e) => {
+                    last_error = Some(io::Error::new(io::ErrorKind::ConnectionRefused, e));
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                format!("Unable to connect to {}:{}", host, port),
+            )
+        }))
     }
 
-    pub async fn connect(target: &Target) -> Result<Self, ProtocolError> {
+    pub async fn connect(target: &str) -> Result<Self, ProtocolError> {
+        let target = parse_target(target)?;
+        Self::connect_with_target(&target).await
+    }
+
+    pub(crate) async fn connect_with_target(target: &Target) -> Result<Self, ProtocolError> {
+        Self::connect_inner(target).await
+    }
+
+    async fn connect_inner(target: &Target) -> Result<Self, ProtocolError> {
         let host = target
             .host()
             .ok_or_else(|| ProtocolError::InvalidTarget("Target missing host".to_string()))?;
@@ -490,20 +508,13 @@ impl H3Connection {
 
     pub async fn create_request_stream(&mut self) -> Result<(u32, SendStream), ProtocolError> {
         let stream_id = self.next_stream_id;
-        self.next_stream_id += 4; // Client uses stream IDs 0, 4, 8, 12, ... for bidirectional streams
+        self.next_stream_id += CLIENT_BIDI_STREAM_INCREMENT;
 
         let (send_stream, recv_stream) = self.connection.open_bi().await.map_err(|e| {
             ProtocolError::ConnectionFailed(format!("Failed to open request stream: {}", e))
         })?;
 
-        self.streams.insert(
-            stream_id,
-            StreamInfo {
-                state: StreamState::Open,
-                recv_stream,
-                recv_buf: BytesMut::new(),
-            },
-        );
+        self.streams.insert(stream_id, StreamInfo::new(recv_stream));
 
         Ok((stream_id, send_stream))
     }

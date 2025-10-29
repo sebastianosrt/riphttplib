@@ -24,6 +24,10 @@ impl FrameH3 {
         }
     }
 
+    pub fn header(stream_id: u32, header_block: Bytes) -> Self {
+        Self::new(FrameTypeH3::Headers, stream_id, header_block)
+    }
+
     pub fn data(stream_id: u32, data: Bytes) -> Self {
         Self::new(FrameTypeH3::Data, stream_id, data)
     }

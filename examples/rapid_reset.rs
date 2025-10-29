@@ -1,6 +1,7 @@
 use riphttplib::{prepare_pseudo_headers, FrameBuilderExt, Request};
 use riphttplib::types::{Header, ClientTimeouts, FrameH2};
 use riphttplib::h2::connection::{H2Connection, StreamEvent};
+use riphttplib::h2::framing::RstErrorCode;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _i in 1..10000 {
         print!("{}\n", stream_id);
         FrameH2::header(stream_id, &headers, false, true)?
-            .chain(FrameH2::rst(stream_id, 0x8))
+            .chain(FrameH2::rst(stream_id, RstErrorCode::Cancel))
             .send(&mut connection).await?;
         stream_id = connection.create_stream().await?;
     }
