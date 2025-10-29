@@ -7,7 +7,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let body = "body";
     let trailers = vec![Header::new("traileaaaaaaaaaaar".into(), "testaaa:ss".into())];
 
-    let request = Request::new("https://localhost:44443", "GET")?
+    let request = Request::new("https://localhost:32443", "GET")?
         .header(Header::new("User-Agent".to_string(), "riphttplib/0.1.0".to_string()))
         .headers(headers)
         .body(body)

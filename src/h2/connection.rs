@@ -1346,6 +1346,8 @@ impl H2Connection {
             ProtocolError::InvalidResponse("No final response received".to_string())
         })?;
 
+        let cookies = Response::collect_cookies(&headers);
+
         Ok(Response {
             status,
             protocol,
@@ -1355,6 +1357,7 @@ impl H2Connection {
             frames: self
                 .take_captured_frames(stream_id)
                 .map(|frames| frames.into_iter().map(ResponseFrame::Http2).collect()),
+            cookies,
         })
     }
 }

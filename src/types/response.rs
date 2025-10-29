@@ -1,4 +1,4 @@
-use super::{FrameH2, FrameH3, Header};
+use super::{extract_cookies, FrameH2, FrameH3, Header};
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -16,6 +16,7 @@ pub struct Response {
     pub body: Bytes,
     pub trailers: Option<Vec<Header>>,
     pub frames: Option<Vec<ResponseFrame>>,
+    pub cookies: Vec<(String, String)>,
 }
 
 impl Response {
@@ -25,5 +26,9 @@ impl Response {
 
     pub fn json(self: &Self) -> Result<Value, serde_json::Error> {
         serde_json::from_slice(&self.body)
+    }
+
+    pub fn collect_cookies(headers: &[Header]) -> Vec<(String, String)> {
+        extract_cookies(headers)
     }
 }

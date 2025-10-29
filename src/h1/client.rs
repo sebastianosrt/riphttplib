@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+#[derive(Clone)]
 pub struct H1Client {
     timeouts: ClientTimeouts,
 }
@@ -23,6 +24,10 @@ impl H1Client {
 
     pub fn get_timeouts(&self) -> &ClientTimeouts {
         &self.timeouts
+    }
+
+    pub fn session(&self) -> crate::session::H1Session {
+        crate::session::H1Session::new(self.clone())
     }
 
     pub async fn send_request(&self, request: Request) -> Result<Response, ProtocolError> {
@@ -320,6 +325,8 @@ impl H1Client {
                 .read_body(reader, &headers, method, status, timeouts)
                 .await?;
 
+            let cookies = Response::collect_cookies(&headers);
+
             return Ok(Response {
                 status,
                 protocol,
@@ -331,6 +338,7 @@ impl H1Client {
                     Some(trailers)
                 },
                 frames: None,
+                cookies,
             });
         }
     }

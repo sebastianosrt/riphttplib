@@ -10,6 +10,7 @@ use crate::utils::{
 use async_trait::async_trait;
 use bytes::Bytes;
 
+#[derive(Clone)]
 pub struct H3Client {
     timeouts: ClientTimeouts,
 }
@@ -25,6 +26,10 @@ impl H3Client {
 
     pub fn get_timeouts(&self) -> &ClientTimeouts {
         &self.timeouts
+    }
+
+    pub fn session(&self) -> crate::session::H3Session {
+        crate::session::H3Session::new(self.clone())
     }
 
     pub fn build_request(
@@ -276,6 +281,8 @@ impl H3Client {
         // Clean up the closed stream
         connection.remove_closed_stream(stream_id);
 
+        let cookies = Response::collect_cookies(&headers);
+
         Ok(Response {
             status,
             protocol,
@@ -287,6 +294,7 @@ impl H3Client {
             } else {
                 Some(captured_frames)
             },
+            cookies,
         })
     }
 }

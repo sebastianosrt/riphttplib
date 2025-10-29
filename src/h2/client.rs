@@ -8,6 +8,7 @@ use crate::utils::{
 use async_trait::async_trait;
 use bytes::Bytes;
 
+#[derive(Clone)]
 pub struct H2Client {
     timeouts: ClientTimeouts,
 }
@@ -23,6 +24,10 @@ impl H2Client {
 
     pub fn get_timeouts(&self) -> &ClientTimeouts {
         &self.timeouts
+    }
+
+    pub fn session(&self) -> crate::session::H2Session {
+        crate::session::H2Session::new(self.clone())
     }
 
     pub fn build_request(
