@@ -3,7 +3,7 @@ use crate::types::{
     ClientTimeouts, H2StreamErrorKind, Header, Protocol, ProtocolError, Request, Response,
 };
 use crate::utils::{
-    apply_redirect, ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers,
+    apply_redirect, ensure_user_agent, merge_headers, prepare_pseudo_headers,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -48,11 +48,14 @@ impl H2Client {
         let stream_id = connection.create_stream().await?;
 
         let pseudo_headers = prepare_pseudo_headers(request)?;
+        
+        
         let mut headers = merge_headers(pseudo_headers, request);
         ensure_user_agent(&mut headers);
 
         let has_body = request.body.as_ref().map_or(false, |body| !body.is_empty());
-        let has_trailers = request.trailers.is_empty();
+        let has_trailers = !request.trailers.is_empty();
+
 
         let end_stream = !has_body && !has_trailers;
         connection

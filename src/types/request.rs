@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use serde_json::Value;
 use url::{form_urlencoded, Url};
-use urlencoding::{encode, decode};
+use urlencoding::encode;
 
 use super::error::ProtocolError;
 use super::timeouts::ClientTimeouts;
