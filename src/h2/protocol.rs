@@ -38,10 +38,6 @@ impl H2 {
         let mut header_block = prepared.pseudo_headers.clone();
         header_block.extend(prepared.headers.clone());
 
-        for h in &header_block {
-            println!("{}", &h);
-        }
-
         let has_body = prepared.body.as_ref().map_or(false, |body| !body.is_empty());
         let has_trailers = !prepared.trailers.is_empty();
 

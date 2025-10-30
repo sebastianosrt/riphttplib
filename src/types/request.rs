@@ -407,6 +407,13 @@ impl Request {
         self
     }
 
+    pub fn set_port(mut self, port: u16) -> Self {
+        self.target.set_port(port);
+        self
+    }
+
+    //
+
     pub fn header_mut(&mut self, header: Header) {
         self.headers.push(header);
     }
@@ -684,17 +691,6 @@ impl Request {
             .any(|header| header.name.eq_ignore_ascii_case(name))
     }
 
-
-    ///
-
-    /* prepare the real request to be sent, the request should have:
-        - method
-        - path
-        - pseudoheaders if http2/3
-        - headers
-        - body
-        - trailers
-    */
     pub fn prepare_request(&self) -> Result<PreparedRequest, ProtocolError> {
         let headers = self.prepare_headers();
         let pseudo_headers = Self::prepare_pseudo_headers(self)?;
@@ -708,9 +704,6 @@ impl Request {
             trailers: self.trailers.clone(),
         })
     }
-
-    ///
-
 
     pub fn timeouts(&self, fallback: &ClientTimeouts) -> ClientTimeouts {
         self.timeout.clone().unwrap_or_else(|| fallback.clone())

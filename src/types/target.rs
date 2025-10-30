@@ -52,40 +52,9 @@ impl Target {
         self.url.as_ref()
     }
 
-    // async fn test_http1_support(&self, timeouts: &ClientTimeouts) -> bool {
-    //     match Request::new(self.as_str(), "HEAD") {
-    //         Ok(request) => {
-    //             let client = H1::timeouts(timeouts.clone());
-    //             client.send_request(request).await.is_ok()
-    //         }
-    //         Err(_) => false,
-    //     }
-    // }
-
-    // async fn test_http2_support(&self, timeouts: &ClientTimeouts) -> bool {
-    //     match Request::new(self.as_str(), "HEAD") {
-    //         Ok(request) => {
-    //             let client = H2::timeouts(timeouts.clone());
-    //             client.send_request(request).await.is_ok()
-    //         }
-    //         Err(_) => false,
-    //     }
-    // }
-
-    // async fn test_http3_support(&self, timeouts: &ClientTimeouts) -> bool {
-    //     // Only test HTTP/3 for HTTPS targets (QUIC requires TLS)
-    //     if self.scheme() != "https" {
-    //         return false;
-    //     }
-
-    //     match Request::new(self.as_str(), "HEAD") {
-    //         Ok(request) => {
-    //             let client = H3::timeouts(timeouts.clone());
-    //             client.send_request(request).await.is_ok()
-    //         }
-    //         Err(_) => false,
-    //     }
-    // }
+    pub fn set_port(&mut self, port: u16) {
+        let _ = self.url.set_port(Some(port));
+    }
 }
 
 impl std::fmt::Display for Target {
