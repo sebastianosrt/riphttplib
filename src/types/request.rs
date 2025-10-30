@@ -86,8 +86,26 @@ impl RequestBuilder {
         Self { inner: Ok(request) }
     }
 
-    pub fn header(&mut self, header: impl AsRef<str>) -> &mut Self {
-        if self.inner.is_err() {
+    pub fn build(self) -> Result<Request, ProtocolError> {
+        self.inner
+    }
+
+pub fn take(&mut self) -> Result<Request, ProtocolError> {
+        std::mem::replace(
+            &mut self.inner,
+            Err(ProtocolError::RequestFailed(
+                "request already consumed".to_string(),
+            )),
+        )
+    }
+}
+
+pub trait RequestBuilderOps {
+    fn builder_mut(&mut self) -> &mut RequestBuilder;
+
+    fn header(&mut self, header: impl AsRef<str>) -> &mut Self {
+        let builder = self.builder_mut();
+        if builder.inner.is_err() {
             return self;
         }
 
@@ -95,7 +113,7 @@ impl RequestBuilder {
         let parsed = match parse_header(&header_text) {
             Some(parsed) => parsed,
             None => {
-                self.inner = Err(ProtocolError::MalformedHeaders(format!(
+                builder.inner = Err(ProtocolError::MalformedHeaders(format!(
                     "Invalid header '{}'",
                     header_text
                 )));
@@ -103,20 +121,20 @@ impl RequestBuilder {
             }
         };
 
-        if let Ok(request) = self.inner.as_mut() {
+        if let Ok(request) = builder.inner.as_mut() {
             request.header_mut(parsed);
         }
 
         self
     }
 
-    pub fn headers<I, S>(&mut self, headers: I) -> &mut Self
+    fn headers<I, S>(&mut self, headers: I) -> &mut Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         for header in headers {
-            if self.inner.is_err() {
+            if self.builder_mut().inner.is_err() {
                 break;
             }
             self.header(header);
@@ -124,8 +142,9 @@ impl RequestBuilder {
         self
     }
 
-    pub fn trailer(&mut self, trailer: impl AsRef<str>) -> &mut Self {
-        if self.inner.is_err() {
+    fn trailer(&mut self, trailer: impl AsRef<str>) -> &mut Self {
+        let builder = self.builder_mut();
+        if builder.inner.is_err() {
             return self;
         }
 
@@ -133,7 +152,7 @@ impl RequestBuilder {
         let parsed = match parse_header(&trailer_text) {
             Some(parsed) => parsed,
             None => {
-                self.inner = Err(ProtocolError::MalformedHeaders(format!(
+                builder.inner = Err(ProtocolError::MalformedHeaders(format!(
                     "Invalid trailer '{}'",
                     trailer_text
                 )));
@@ -141,20 +160,20 @@ impl RequestBuilder {
             }
         };
 
-        if let Ok(request) = self.inner.as_mut() {
+        if let Ok(request) = builder.inner.as_mut() {
             request.trailer_mut(parsed);
         }
 
         self
     }
 
-    pub fn trailers<I, S>(&mut self, trailers: I) -> &mut Self
+    fn trailers<I, S>(&mut self, trailers: I) -> &mut Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         for trailer in trailers {
-            if self.inner.is_err() {
+            if self.builder_mut().inner.is_err() {
                 break;
             }
             self.trailer(trailer);
@@ -162,25 +181,107 @@ impl RequestBuilder {
         self
     }
 
-    pub fn body(&mut self, body: impl AsRef<[u8]>) -> &mut Self {
-        if let Ok(request) = self.inner.as_mut() {
+    fn body(&mut self, body: impl AsRef<[u8]>) -> &mut Self {
+        if let Ok(request) = self.builder_mut().inner.as_mut() {
             request.set_body(Bytes::copy_from_slice(body.as_ref()));
         }
         self
     }
 
-    pub fn json(&mut self, value: Value) -> &mut Self {
-        if let Ok(request) = self.inner.as_mut() {
+    fn json(&mut self, value: Value) -> &mut Self {
+        if let Ok(request) = self.builder_mut().inner.as_mut() {
             request.set_json(value);
         }
         self
     }
 
-    pub fn data(&mut self, data: impl AsRef<str>) -> &mut Self {
-        if let Ok(request) = self.inner.as_mut() {
+    fn data(&mut self, data: impl AsRef<str>) -> &mut Self {
+        if let Ok(request) = self.builder_mut().inner.as_mut() {
             request.set_data(data.as_ref());
         }
         self
+    }
+
+    fn params<I, K, V>(&mut self, params: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        if let Ok(request) = self.builder_mut().inner.as_mut() {
+            request.set_params(params);
+        }
+        self
+    }
+
+    fn cookies<I, K, V>(&mut self, cookies: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        if let Ok(request) = self.builder_mut().inner.as_mut() {
+            request.set_cookies(cookies);
+        }
+        self
+    }
+
+    fn allow_redirects(&mut self, allow: bool) -> &mut Self {
+        if let Ok(request) = self.builder_mut().inner.as_mut() {
+            request.set_follow_redirects(allow);
+        }
+        self
+    }
+
+    fn timeout(&mut self, timeout: ClientTimeouts) -> &mut Self {
+        if let Ok(request) = self.builder_mut().inner.as_mut() {
+            request.set_timeout(timeout);
+        }
+        self
+    }
+}
+
+impl RequestBuilderOps for RequestBuilder {
+    fn builder_mut(&mut self) -> &mut RequestBuilder {
+        self
+    }
+}
+
+impl RequestBuilder {
+    pub fn header(&mut self, header: impl AsRef<str>) -> &mut Self {
+        RequestBuilderOps::header(self, header)
+    }
+
+    pub fn headers<I, S>(&mut self, headers: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        RequestBuilderOps::headers(self, headers)
+    }
+
+    pub fn trailer(&mut self, trailer: impl AsRef<str>) -> &mut Self {
+        RequestBuilderOps::trailer(self, trailer)
+    }
+
+    pub fn trailers<I, S>(&mut self, trailers: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        RequestBuilderOps::trailers(self, trailers)
+    }
+
+    pub fn body(&mut self, body: impl AsRef<[u8]>) -> &mut Self {
+        RequestBuilderOps::body(self, body)
+    }
+
+    pub fn json(&mut self, value: Value) -> &mut Self {
+        RequestBuilderOps::json(self, value)
+    }
+
+    pub fn data(&mut self, data: impl AsRef<str>) -> &mut Self {
+        RequestBuilderOps::data(self, data)
     }
 
     pub fn params<I, K, V>(&mut self, params: I) -> &mut Self
@@ -189,10 +290,7 @@ impl RequestBuilder {
         K: Into<String>,
         V: Into<String>,
     {
-        if let Ok(request) = self.inner.as_mut() {
-            request.set_params(params);
-        }
-        self
+        RequestBuilderOps::params(self, params)
     }
 
     pub fn cookies<I, K, V>(&mut self, cookies: I) -> &mut Self
@@ -201,37 +299,15 @@ impl RequestBuilder {
         K: Into<String>,
         V: Into<String>,
     {
-        if let Ok(request) = self.inner.as_mut() {
-            request.set_cookies(cookies);
-        }
-        self
+        RequestBuilderOps::cookies(self, cookies)
     }
 
     pub fn allow_redirects(&mut self, allow: bool) -> &mut Self {
-        if let Ok(request) = self.inner.as_mut() {
-            request.set_follow_redirects(allow);
-        }
-        self
+        RequestBuilderOps::allow_redirects(self, allow)
     }
 
     pub fn timeout(&mut self, timeout: ClientTimeouts) -> &mut Self {
-        if let Ok(request) = self.inner.as_mut() {
-            request.set_timeout(timeout);
-        }
-        self
-    }
-
-    pub fn build(self) -> Result<Request, ProtocolError> {
-        self.inner
-    }
-
-    pub fn take(&mut self) -> Result<Request, ProtocolError> {
-        std::mem::replace(
-            &mut self.inner,
-            Err(ProtocolError::RequestFailed(
-                "request already consumed".to_string(),
-            )),
-        )
+        RequestBuilderOps::timeout(self, timeout)
     }
 }
 
@@ -516,6 +592,7 @@ impl Request {
         }
 
         let method = request.method.to_uppercase();
+        // TODO check correctness
         match method.as_str() {
             "CONNECT" => {
                 if !pseudo_headers.iter().any(|h| h.name == ":authority") {
@@ -553,7 +630,7 @@ impl Request {
                 if !pseudo_headers.iter().any(|h| h.name == ":path") {
                     pseudo_headers.push(Header::new(
                         ":path".to_string(),
-                        request.target.path().to_string(),
+                        request.path().to_string(), // path with query params
                     ));
                 }
                 if !pseudo_headers.iter().any(|h| h.name == ":scheme") {
@@ -708,7 +785,7 @@ impl Request {
         Ok(self)
     }
 
-    pub fn without_proxies(mut self) -> Self {
+pub fn without_proxies(mut self) -> Self {
         self.proxies = None;
         self
     }

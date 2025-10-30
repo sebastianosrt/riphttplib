@@ -1,5 +1,6 @@
 use super::Protocol;
 use crate::types::{ClientTimeouts, ProtocolError, RequestBuilder, Response};
+use crate::types::request::RequestBuilderOps;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -28,7 +29,7 @@ where
     }
 
     pub fn header(mut self, header: impl AsRef<str>) -> Self {
-        self.builder.header(header);
+        RequestBuilderOps::header(&mut self, header);
         self
     }
 
@@ -37,22 +38,22 @@ where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.builder.headers(headers);
+        RequestBuilderOps::headers(&mut self, headers);
         self
     }
 
     pub fn data(mut self, body: impl AsRef<str>) -> Self {
-        self.builder.data(body);
+        RequestBuilderOps::data(&mut self, body);
         self
     }
 
     pub fn body(mut self, body: impl AsRef<[u8]>) -> Self {
-        self.builder.body(body);
+        RequestBuilderOps::body(&mut self, body);
         self
     }
 
     pub fn json(mut self, value: Value) -> Self {
-        self.builder.json(value);
+        RequestBuilderOps::json(&mut self, value);
         self
     }
 
@@ -62,12 +63,12 @@ where
         K: Into<String>,
         V: Into<String>,
     {
-        self.builder.params(params);
+        RequestBuilderOps::params(&mut self, params);
         self
     }
 
     pub fn trailer(mut self, trailer: impl AsRef<str>) -> Self {
-        self.builder.trailer(trailer);
+        RequestBuilderOps::trailer(&mut self, trailer);
         self
     }
 
@@ -76,7 +77,7 @@ where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.builder.trailers(trailers);
+        RequestBuilderOps::trailers(&mut self, trailers);
         self
     }
 
@@ -86,18 +87,27 @@ where
         K: Into<String>,
         V: Into<String>,
     {
-        self.builder.cookies(cookies);
+        RequestBuilderOps::cookies(&mut self, cookies);
         self
     }
 
     pub fn allow_redirects(mut self, allow: bool) -> Self {
-        self.builder.allow_redirects(allow);
+        RequestBuilderOps::allow_redirects(&mut self, allow);
         self
     }
 
     pub fn timeout(mut self, timeout: ClientTimeouts) -> Self {
-        self.builder.timeout(timeout);
+        RequestBuilderOps::timeout(&mut self, timeout);
         self
+    }
+}
+
+impl<C> RequestBuilderOps for ClientRequest<C>
+where
+    C: Protocol + Send + Unpin + 'static,
+{
+    fn builder_mut(&mut self) -> &mut RequestBuilder {
+        &mut self.builder
     }
 }
 

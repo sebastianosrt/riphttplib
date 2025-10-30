@@ -1,6 +1,6 @@
 use riphttplib::h3::connection::H3Connection;
 use riphttplib::types::{FrameH3, FrameType, FrameTypeH3};
-use riphttplib::{prepare_pseudo_headers, Request};
+use riphttplib::{Request};
 use tokio::time::{Duration, Instant};
 
 #[tokio::main]
@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let url = "https://localhost:11444";
 
     let req = Request::new(url, "GET")?;
-    let headers = prepare_pseudo_headers(&req)?;
+    let headers =Request::prepare_pseudo_headers(&req)?;
 
     let mut connection = H3Connection::connect(url).await?;
     let (stream_id, mut send_stream) = connection.create_request_stream().await?;

@@ -1,6 +1,6 @@
 use riphttplib::h2::connection::H2Connection;
 use riphttplib::types::{ClientTimeouts, FrameH2, Header};
-use riphttplib::{prepare_pseudo_headers, FrameBuilderExt, Request};
+use riphttplib::{FrameBuilderExt, Request};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timeout = ClientTimeouts::disabled();
 
     let req = Request::new(url, "GET")?;
-    let headers = prepare_pseudo_headers(&req)?;
+    let headers = Request::prepare_pseudo_headers(&req)?;
     let cont_header = vec![Header::new("x-test".into(), "continuation-data".into())];
 
     for _i in 1..1000 {

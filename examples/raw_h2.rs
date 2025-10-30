@@ -1,6 +1,6 @@
 use riphttplib::h2::connection::{H2Connection, StreamEvent};
 use riphttplib::types::{ClientTimeouts, FrameH2};
-use riphttplib::{prepare_pseudo_headers, Request};
+use riphttplib::{Request};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timeout = ClientTimeouts::disabled();
 
     let req = Request::new(url, "GET")?;
-    let headers = prepare_pseudo_headers(&req)?;
+    let headers =Request::prepare_pseudo_headers(&req)?;
 
     let mut connection = H2Connection::connect(url, &timeout).await?;
     let stream_id = connection.create_stream().await?;
