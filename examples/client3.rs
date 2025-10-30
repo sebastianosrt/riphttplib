@@ -15,14 +15,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let body = "test";
     let trailers = vec![Header::new("trailer".into(), "test".into())];
 
-    let request = Request::new("https://httpbin.org/get", "GET")?
-        .header(Header::new(
-            "User-Agent".to_string(),
-            "riphttplib/0.1.0".to_string(),
-        ))
-        .headers(headers)
+    // let request = Request::new("https://httpbin.org/get", "GET")?
+    let request = Request::new("https://httpbin.org/get", "GET")?;
         // .body(body)
-        .json(json!({ "test": "value" }));
+        // .json(json!({ "test": "value" }));
         // .params(vec![("test", "h3-features")])
         // .cookies(vec![("session", "test")])
         // .timeout(ClientTimeouts {

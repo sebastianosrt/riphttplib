@@ -1,12 +1,10 @@
+use crate::PreparedRequest;
 use crate::h3::connection::H3Connection;
 use crate::types::{
     ClientTimeouts, FrameType, FrameTypeH3, H3StreamErrorKind, Header, Protocol, ProtocolError,
     Request, Response, ResponseFrame,
 };
-use crate::utils::{
-    apply_redirect, ensure_user_agent, merge_headers, prepare_pseudo_headers,
-    timeout_result, HTTP_VERSION_3_0,
-};
+use crate::utils::{apply_redirect, timeout_result, HTTP_VERSION_3_0};
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -38,8 +36,16 @@ impl H3 {
         headers: Vec<Header>,
         body: Option<Bytes>,
         trailers: Option<Vec<Header>>,
-    ) -> Result<Request, ProtocolError> {
-        crate::utils::build_request(target, method, headers, body, trailers)
+    ) -> Result<PreparedRequest, ProtocolError> {
+        let mut request = Request::new(target, method)?;
+        request.headers_mut(headers);
+        if let Some(body_bytes) = body {
+            request.set_body(body_bytes);
+        }
+        if let Some(trailer_headers) = trailers {
+            request.trailers_mut(trailer_headers);
+        }
+        request.prepare_request()
     }
 
     async fn send_request_inner(
@@ -51,13 +57,13 @@ impl H3 {
         let (stream_id, mut send_stream) =
             timeout_result(timeouts.connect, connection.create_request_stream()).await?;
 
-        let pseudo_headers = prepare_pseudo_headers(request)?;
-        let mut headers = merge_headers(pseudo_headers, request);
-        ensure_user_agent(&mut headers);
+        let prepared = request.prepare_request()?;
+        let mut header_block_entries = prepared.pseudo_headers.clone();
+        header_block_entries.extend(prepared.headers.clone());
 
         let header_block = timeout_result(
             timeouts.write,
-            connection.encode_headers(stream_id, &headers),
+            connection.encode_headers(stream_id, &header_block_entries),
         )
         .await?;
         let headers_frame =
@@ -78,7 +84,7 @@ impl H3 {
         })
         .await?;
 
-        if let Some(body) = request.body.as_ref() {
+        if let Some(body) = prepared.body.as_ref() {
             if !body.is_empty() {
                 let data_frame = crate::types::FrameH3::data(stream_id, body.clone());
                 let serialized_data = data_frame.serialize().map_err(|e| {
@@ -96,10 +102,10 @@ impl H3 {
             }
         }
 
-        if !request.trailers.is_empty() {
+        if !prepared.trailers.is_empty() {
             let trailer_block = timeout_result(
                 timeouts.write,
-                connection.encode_headers(stream_id, &request.trailers),
+                connection.encode_headers(stream_id, &prepared.trailers),
             )
             .await?;
             let trailers_frame =
@@ -152,7 +158,7 @@ impl H3 {
                 ));
             }
 
-            let timeouts = request.effective_timeouts(&self.timeouts);
+            let timeouts = request.timeouts(&self.timeouts);
             let mut connection = timeout_result(
                 timeouts.connect,
                 H3Connection::connect_with_target(&request.target),

@@ -49,7 +49,7 @@ impl H1 {
                 ));
             }
 
-            let timeouts = request.effective_timeouts(&self.timeouts);
+            let timeouts = request.timeouts(&self.timeouts);
             let mut stream = self.open_stream(&request, &timeouts).await?;
             self.write_request(&mut stream, &request, &timeouts).await?;
 

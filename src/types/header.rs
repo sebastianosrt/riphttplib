@@ -7,13 +7,13 @@ pub struct Header {
 impl Header {
     pub fn new(name: String, value: String) -> Self {
         Self {
-            name,
+            name: name.to_lowercase(),
             value: Some(value),
         }
     }
 
     pub fn new_valueless(name: String) -> Self {
-        Self { name, value: None }
+        Self { name: name.to_lowercase(), value: None }
     }
 
     pub fn to_string(&self) -> String {

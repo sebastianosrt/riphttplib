@@ -1,5 +1,4 @@
 use crate::types::{Header, ProtocolError, Request, Response, Target};
-use bytes::Bytes;
 use std::future::Future;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -20,6 +19,18 @@ pub const CHUNKED_ENCODING: &str = "chunked";
 pub const CONTENT_TYPE_HEADER: &str = "content-type";
 pub const COOKIE_HEADER: &str = "cookie";
 pub const APPLICATION_JSON: &str = "application/json";
+
+pub fn ensure_user_agent(headers: &mut Vec<Header>) {
+    if !headers
+        .iter()
+        .any(|h| h.name.eq_ignore_ascii_case(USER_AGENT_HEADER))
+    {
+        headers.push(Header::new(
+            USER_AGENT_HEADER.to_string(),
+            USER_AGENT.to_string(),
+        ));
+    }
+}
 
 pub fn parse_target(target: &str) -> Result<Target, ProtocolError> {
     let url = Url::parse(target)
@@ -75,127 +86,13 @@ pub fn parse_header(header: &str) -> Option<Header> {
     }
 }
 
-// TODO consider removing
-pub fn normalize_headers(headers: &[Header]) -> Vec<Header> {
-    headers
-        .iter()
-        .map(|h| Header {
-            name: h.name.to_lowercase(),
-            value: h.value.clone(),
-        })
-        .collect()
-}
-
-pub fn prepare_pseudo_headers(request: &Request) -> Result<Vec<Header>, ProtocolError> {
-    let mut pseudo_headers: Vec<Header> = request
-        .headers
-        .iter()
-        .filter(|h| h.name.starts_with(':'))
-        .cloned()
-        .collect();
-
-    if !pseudo_headers.iter().any(|h| h.name == ":method") {
-        pseudo_headers.insert(
-            0,
-            Header::new(":method".to_string(), request.method.clone()),
-        );
+// TODO write better
+pub fn parse_headers(headers: Vec<String>) -> Vec<Header> {
+    let mut out = Vec::new();
+    for header in &headers {
+        out.push(parse_header(header).unwrap());
     }
-
-    let method = request.method.to_uppercase();
-    match method.as_str() {
-        "CONNECT" => {
-            if !pseudo_headers.iter().any(|h| h.name == ":authority") {
-                let authority = request.target.authority().ok_or_else(|| {
-                    ProtocolError::InvalidTarget(
-                        "CONNECT requests require an authority".to_string(),
-                    )
-                })?;
-                pseudo_headers.push(Header::new(":authority".to_string(), authority));
-            }
-            pseudo_headers.retain(|h| h.name != ":scheme" && h.name != ":path");
-        }
-        "OPTIONS" => {
-            let path_value = if request.target.path_only() == "*" {
-                "*".to_string()
-            } else {
-                request.target.path().to_string()
-            };
-            if !pseudo_headers.iter().any(|h| h.name == ":path") {
-                pseudo_headers.push(Header::new(":path".to_string(), path_value));
-            }
-            if !pseudo_headers.iter().any(|h| h.name == ":authority") {
-                if let Some(authority) = request.target.authority() {
-                    pseudo_headers.push(Header::new(":authority".to_string(), authority));
-                }
-            }
-            if !pseudo_headers.iter().any(|h| h.name == ":scheme") {
-                pseudo_headers.push(Header::new(
-                    ":scheme".to_string(),
-                    request.target.scheme().to_string(),
-                ));
-            }
-        }
-        _ => {
-            if !pseudo_headers.iter().any(|h| h.name == ":path") {
-                pseudo_headers.push(Header::new(
-                    ":path".to_string(),
-                    request.target.path().to_string(),
-                ));
-            }
-            if !pseudo_headers.iter().any(|h| h.name == ":scheme") {
-                pseudo_headers.push(Header::new(
-                    ":scheme".to_string(),
-                    request.target.scheme().to_string(),
-                ));
-            }
-            if !pseudo_headers.iter().any(|h| h.name == ":authority") {
-                if let Some(authority) = request.target.authority() {
-                    pseudo_headers.push(Header::new(":authority".to_string(), authority));
-                }
-            }
-        }
-    }
-
-    Ok(normalize_headers(&pseudo_headers)) // TODO normalization should happen only in Header::new
-}
-
-pub fn merge_headers(pseudo: Vec<Header>, request: &Request) -> Vec<Header> {
-    let mut headers = Vec::with_capacity(pseudo.len() + request.headers.len());
-    headers.extend(pseudo);
-    headers.extend(
-        request
-            .headers
-            .iter()
-            .filter(|h| !h.name.starts_with(':'))
-            .cloned()
-            .map(|mut h| {
-                h.name = h.name.to_lowercase();
-                h
-            }),
-    );
-    headers
-}
-
-pub fn build_request(
-    target: &str,
-    method: impl Into<String>,
-    headers: Vec<Header>,
-    body: Option<Bytes>,
-    trailers: Option<Vec<Header>>,
-) -> Result<Request, ProtocolError> {
-    Request::new(target, method).map(|r| r.headers(headers).optional_body(body).trailers(trailers.unwrap()))
-}
-
-pub fn ensure_user_agent(headers: &mut Vec<Header>) {
-    if !headers
-        .iter()
-        .any(|h| h.name.eq_ignore_ascii_case(USER_AGENT_HEADER))
-    {
-        headers.push(Header::new(
-            USER_AGENT_HEADER.to_string(),
-            USER_AGENT.to_string(),
-        ));
-    }
+    out
 }
 
 pub fn header_value<'a>(headers: &'a [Header], name: &str) -> Option<&'a str> {

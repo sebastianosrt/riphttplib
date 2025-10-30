@@ -17,21 +17,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let request = Request::new("https://quic.tech:8443", "GET")?
         .header(Header::new(
-            "User-Agent".to_string(),
+            "aser-ugent".to_string(),
             "riphttplib/0.1.0".to_string(),
         ))
-        .headers(headers)
+        // .headers(headers)
         .body(body)
-        .json(json!({ "test": "value" }))
-        .params(vec![("test", "h3-features")])
-        .cookies(vec![("session", "test")])
-        .timeout(ClientTimeouts {
-            connect: Some(Duration::from_secs(15)),
-            read: Some(Duration::from_secs(45)),
-            write: Some(Duration::from_secs(15)),
-        })
-        .follow_redirects(true)
-        .trailers(trailers);
+        // .json(json!({ "test": "value" }))
+        // .params(vec![("test", "h3-features")])
+        // .cookies(vec![("session", "test")])
+        // .timeout(ClientTimeouts {
+        //     connect: Some(Duration::from_secs(15)),
+        //     read: Some(Duration::from_secs(45)),
+        //     write: Some(Duration::from_secs(15)),
+        // })
+        // .follow_redirects(true)
+        // .trailers(trailers);
+        ;
 
     {
         let client = H1::new();

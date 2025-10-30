@@ -1,12 +1,9 @@
 use crate::h2::connection::H2Connection;
 use crate::types::{
-    ClientTimeouts, H2StreamErrorKind, Header, Protocol, ProtocolError, Request, Response,
+    ClientTimeouts, H2StreamErrorKind, Protocol, ProtocolError, Request, Response,
 };
-use crate::utils::{
-    apply_redirect, ensure_user_agent, merge_headers, prepare_pseudo_headers,
-};
+use crate::utils::apply_redirect;
 use async_trait::async_trait;
-use bytes::Bytes;
 
 #[derive(Clone)]
 pub struct H2 {
@@ -30,16 +27,6 @@ impl H2 {
         crate::session::H2Session::new(self.clone())
     }
 
-    pub fn build_request(
-        target: &str,
-        method: impl Into<String>,
-        headers: Vec<Header>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-    ) -> Result<Request, ProtocolError> {
-        crate::utils::build_request(target, method, headers, body, trailers)
-    }
-
     async fn send_request_inner(
         &self,
         connection: &mut H2Connection,
@@ -47,19 +34,20 @@ impl H2 {
     ) -> Result<u32, ProtocolError> {
         let stream_id = connection.create_stream().await?;
 
-        let pseudo_headers = prepare_pseudo_headers(request)?;
-        
-        
-        let mut headers = merge_headers(pseudo_headers, request);
-        ensure_user_agent(&mut headers);
+        let prepared = request.prepare_request()?;
+        let mut header_block = prepared.pseudo_headers.clone();
+        header_block.extend(prepared.headers.clone());
 
-        let has_body = request.body.as_ref().map_or(false, |body| !body.is_empty());
-        let has_trailers = !request.trailers.is_empty();
+        for h in &header_block {
+            println!("{}", &h);
+        }
 
+        let has_body = prepared.body.as_ref().map_or(false, |body| !body.is_empty());
+        let has_trailers = !prepared.trailers.is_empty();
 
         let end_stream = !has_body && !has_trailers;
         connection
-            .send_headers(stream_id, &headers, end_stream)
+            .send_headers(stream_id, &header_block, end_stream)
             .await
             .map_err(|e| {
                 ProtocolError::H2StreamError(H2StreamErrorKind::ProtocolViolation(format!(
@@ -68,7 +56,7 @@ impl H2 {
                 )))
             })?;
 
-        if let Some(body) = request.body.as_ref() {
+        if let Some(body) = prepared.body.as_ref() {
             if !body.is_empty() {
                 let end_stream = !has_trailers;
                 connection
@@ -83,10 +71,9 @@ impl H2 {
             }
         }
 
-        if !request.trailers.is_empty() {
-            // let normalized_trailers = normalize_headers(&request.trailers.clone()); //
+        if !prepared.trailers.is_empty() {
             connection
-                .send_headers(stream_id, &request.trailers, true)
+                .send_headers(stream_id, &prepared.trailers, true)
                 .await
                 .map_err(|e| {
                     ProtocolError::H2StreamError(H2StreamErrorKind::ProtocolViolation(format!(
@@ -118,7 +105,7 @@ impl H2 {
                 ));
             }
 
-            let timeouts = request.effective_timeouts(&self.timeouts);
+            let timeouts = request.timeouts(&self.timeouts);
             let mut connection =
                 H2Connection::connect(request.target.url.as_str(), &timeouts).await?;
             let stream_id = self.send_request_inner(&mut connection, &request).await?;
