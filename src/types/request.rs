@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use serde_json::Value;
 use url::{form_urlencoded, Url};
+use urlencoding::{encode, decode};
 
 use super::error::ProtocolError;
 use super::timeouts::ClientTimeouts;
@@ -12,16 +13,16 @@ use crate::utils::parse_target;
 pub struct Request {
     pub target: Target,
     pub method: String,
-    pub headers: Vec<Header>,
-    pub body: Option<Bytes>,
-    pub trailers: Option<Vec<Header>>,
     pub params: Vec<(String, String)>,
-    pub json: Option<Value>,
+    pub headers: Vec<Header>,
+    pub trailers: Vec<Header>,
     pub cookies: Vec<(String, String)>,
+    pub body: Option<Bytes>,
+    pub json: Option<Value>,
+    pub data: Option<String>,
     pub timeout: Option<ClientTimeouts>,
-    pub allow_redirects: bool,
+    pub follow_redirects: bool,
     pub proxies: Option<ProxySettings>,
-    pub is_chunked: Option<bool>,
 }
 
 impl Request {
@@ -29,16 +30,16 @@ impl Request {
         Ok(Self {
             target: parse_target(target)?,
             method: method.into(),
-            headers: Vec::new(),
-            body: None,
-            trailers: None,
             params: Vec::new(),
-            json: None,
+            headers: Vec::new(),
             cookies: Vec::new(),
+            trailers: Vec::new(),
+            body: None,
+            json: None,
+            data: None,
             timeout: None,
-            allow_redirects: true,
-            proxies: None,
-            is_chunked: None,
+            follow_redirects: true,
+            proxies: None
         })
     }
 
@@ -52,32 +53,27 @@ impl Request {
         self
     }
 
-    pub fn body<B: Into<Bytes>>(mut self, body: B) -> Self {
-        self.body = Some(body.into());
-        self.json = None;
+    pub fn trailer(mut self, header: Header) -> Self {
+        self.trailers.push(header);
         self
     }
 
+    pub fn trailers(mut self, trailers: Vec<Header>) -> Self {
+        self.trailers = trailers;
+        self
+    }
+
+    pub fn body<B: Into<Bytes>>(mut self, body: B) -> Self {
+        self.body = Some(body.into());
+        self
+    }
+
+    // TODO consider removing
     pub fn optional_body<B: Into<Bytes>>(mut self, body: Option<B>) -> Self {
         self.body = body.map(Into::into);
         if self.body.is_some() {
             self.json = None;
         }
-        self
-    }
-
-    pub fn trailer(mut self, header: Header) -> Self {
-        match self.trailers {
-            Some(ref mut trailers) => trailers.push(header),
-            None => {
-                self.trailers = Some(vec![header]);
-            }
-        }
-        self
-    }
-
-    pub fn trailers(mut self, trailers: Option<Vec<Header>>) -> Self {
-        self.trailers = trailers;
         self
     }
 
@@ -102,6 +98,13 @@ impl Request {
         self
     }
 
+    pub fn data(mut self, data: &str) -> Self {
+        let encoded = encode(data).to_string();
+        self.data = Some(encoded.clone());
+        self.body = Some(Bytes::from(encoded));
+        self
+    }
+
     pub fn cookies<I, K, V>(mut self, cookies: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
@@ -120,8 +123,8 @@ impl Request {
         self
     }
 
-    pub fn allow_redirects(mut self, allow: bool) -> Self {
-        self.allow_redirects = allow;
+    pub fn follow_redirects(mut self, allow: bool) -> Self {
+        self.follow_redirects = allow;
         self
     }
 
@@ -245,6 +248,7 @@ impl Request {
         }
     }
 
+    // TODO change name?
     pub fn effective_headers(&self) -> Vec<Header> {
         // Pre-calculate capacity to avoid reallocations
         let additional_headers = (if self.json.is_some()

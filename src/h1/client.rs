@@ -168,9 +168,8 @@ impl H1Client {
         let mut req = Vec::new();
         let path = request.path();
 
-        let empty_trailers = Vec::new();
         let mut headers = request.effective_headers();
-        let trailers = request.trailers.as_ref().unwrap_or(&empty_trailers);
+        let trailers = request.trailers.clone();
         ensure_user_agent(&mut headers);
 
         req.extend_from_slice(

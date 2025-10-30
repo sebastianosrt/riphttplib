@@ -1,5 +1,5 @@
 use riphttplib::types::protocol::HttpProtocol;
-use riphttplib::detector::{detect_protocol, DetectedProtocol};
+use riphttplib::detector::{detect_protocol};
 use std::time::Instant;
 
 #[tokio::main]
@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Detecting supported protocols for {}", url);
 
     let detect_start = Instant::now();
-    let result = detect_protocol(url, true).await;
+    let result = detect_protocol(url, false).await;
     let detect_elapsed = detect_start.elapsed();
 
     match result {

@@ -30,8 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             read: Some(Duration::from_secs(45)),
             write: Some(Duration::from_secs(15)),
         })
-        .allow_redirects(true)
-        .trailers(Some(trailers));
+        .follow_redirects(true)
+        .trailers(trailers);
 
     {
         let client = H1Client::new();

@@ -4,7 +4,7 @@ use crate::types::{
     Request, Response, ResponseFrame,
 };
 use crate::utils::{
-    apply_redirect, ensure_user_agent, merge_headers, normalize_headers, prepare_pseudo_headers,
+    apply_redirect, ensure_user_agent, merge_headers, prepare_pseudo_headers,
     timeout_result, HTTP_VERSION_3_0,
 };
 use async_trait::async_trait;
@@ -96,31 +96,28 @@ impl H3Client {
             }
         }
 
-        if let Some(trailers) = request.trailers.as_ref() {
-            if !trailers.is_empty() {
-                let normalized_trailers = normalize_headers(trailers);
-                let trailer_block = timeout_result(
-                    timeouts.write,
-                    connection.encode_headers(stream_id, &normalized_trailers),
-                )
-                .await?;
-                let trailers_frame =
-                    crate::types::FrameH3::new(FrameTypeH3::Headers, stream_id, trailer_block);
-                let serialized_trailers = trailers_frame.serialize().map_err(|e| {
-                    ProtocolError::H3MessageError(format!("Failed to serialize trailers: {}", e))
-                })?;
-                timeout_result(timeouts.write, async {
-                    send_stream
-                        .write_all(&serialized_trailers)
-                        .await
-                        .map_err(|e| {
-                            ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(
-                                format!("Failed to send trailers: {}", e),
-                            ))
-                        })
-                })
-                .await?;
-            }
+        if !request.trailers.is_empty() {
+            let trailer_block = timeout_result(
+                timeouts.write,
+                connection.encode_headers(stream_id, &request.trailers),
+            )
+            .await?;
+            let trailers_frame =
+                crate::types::FrameH3::new(FrameTypeH3::Headers, stream_id, trailer_block);
+            let serialized_trailers = trailers_frame.serialize().map_err(|e| {
+                ProtocolError::H3MessageError(format!("Failed to serialize trailers: {}", e))
+            })?;
+            timeout_result(timeouts.write, async {
+                send_stream
+                    .write_all(&serialized_trailers)
+                    .await
+                    .map_err(|e| {
+                        ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(
+                            format!("Failed to send trailers: {}", e),
+                        ))
+                    })
+            })
+            .await?;
         }
 
         timeout_result(timeouts.write, async {

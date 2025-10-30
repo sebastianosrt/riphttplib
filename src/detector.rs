@@ -1,7 +1,7 @@
 use crate::h1::client::H1Client;
 use crate::stream::create_stream;
 use crate::types::protocol::HttpProtocol;
-use crate::types::{ClientTimeouts, ProtocolError, Request, Target};
+use crate::types::{ClientTimeouts, ProtocolError, Request};
 use crate::h2::connection::H2Connection;
 use crate::utils::{header_value, parse_target};
 use std::time::Duration;
@@ -35,7 +35,7 @@ pub fn extract_alt_svc_port(header: &str) -> Option<u16> {
 
 async fn alt_svc_port(url: &str, timeouts: &ClientTimeouts) -> Option<u16> {
     let request = match Request::new(url, "HEAD") {
-        Ok(req) => req.timeout(timeouts.clone()).allow_redirects(false),
+        Ok(req) => req.timeout(timeouts.clone()).follow_redirects(false),
         Err(_) => return None,
     };
 
@@ -47,6 +47,7 @@ async fn alt_svc_port(url: &str, timeouts: &ClientTimeouts) -> Option<u16> {
     }
 }
 
+// TODO detect http1 with a full request, return the headers to check for svc
 pub async fn detect_protocol(url: &str, skip_h1: bool) -> Result<Vec<DetectedProtocol>, ProtocolError> {
     let target = parse_target(url)?;
     let scheme = target.scheme().to_string();
@@ -70,7 +71,7 @@ pub async fn detect_protocol(url: &str, skip_h1: bool) -> Result<Vec<DetectedPro
     // detect h2
     if H2Connection::connect(url, &timeouts).await.is_ok() {
         supported.push(DetectedProtocol {
-            protocol: HttpProtocol::Http2,
+            protocol: if scheme == "http" { HttpProtocol::H2C } else { HttpProtocol::Http2 },
             port: Some(port),
         });
     }

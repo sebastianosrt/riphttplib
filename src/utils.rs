@@ -1,8 +1,4 @@
-use crate::h1::client::H1Client;
-use crate::h2::connection::H2Connection;
-use crate::stream::create_stream;
-use crate::types::protocol::HttpProtocol;
-use crate::types::{ClientTimeouts, Header, ProtocolError, Request, Response, Target};
+use crate::types::{Header, ProtocolError, Request, Response, Target};
 use bytes::Bytes;
 use std::future::Future;
 use std::time::Duration;
@@ -79,6 +75,7 @@ pub fn parse_header(header: &str) -> Option<Header> {
     }
 }
 
+// TODO consider removing
 pub fn normalize_headers(headers: &[Header]) -> Vec<Header> {
     headers
         .iter()
@@ -186,7 +183,7 @@ pub fn build_request(
     body: Option<Bytes>,
     trailers: Option<Vec<Header>>,
 ) -> Result<Request, ProtocolError> {
-    Request::new(target, method).map(|r| r.headers(headers).optional_body(body).trailers(trailers))
+    Request::new(target, method).map(|r| r.headers(headers).optional_body(body).trailers(trailers.unwrap()))
 }
 
 pub fn ensure_user_agent(headers: &mut Vec<Header>) {
@@ -221,7 +218,7 @@ pub fn resolve_redirect_url(base_url: &Url, location: &str) -> Result<Url, url::
 }
 
 pub fn apply_redirect(request: &mut Request, response: &Response) -> Result<bool, ProtocolError> {
-    if !request.allow_redirects || !is_redirect_status(response.status) {
+    if !request.follow_redirects || !is_redirect_status(response.status) {
         return Ok(false);
     }
 

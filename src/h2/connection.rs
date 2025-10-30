@@ -49,8 +49,8 @@ impl H2Connection {
     ) -> Result<Self, ProtocolError> {
         let target = crate::utils::parse_target(target)?;
         let scheme = target.scheme();
-        let is_tls = matches!(scheme, "https" | "h2");
-        let is_h2c = matches!(scheme, "h2c") || scheme == "http";
+        let is_tls = scheme == "https";
+        let is_h2c = scheme == "http";
 
         if !is_tls && !is_h2c {
             return Err(ProtocolError::RequestFailed(

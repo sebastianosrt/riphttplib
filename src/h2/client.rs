@@ -52,10 +52,7 @@ impl H2Client {
         ensure_user_agent(&mut headers);
 
         let has_body = request.body.as_ref().map_or(false, |body| !body.is_empty());
-        let has_trailers = request
-            .trailers
-            .as_ref()
-            .map_or(false, |trailers| !trailers.is_empty());
+        let has_trailers = request.trailers.is_empty();
 
         let end_stream = !has_body && !has_trailers;
         connection
@@ -83,19 +80,17 @@ impl H2Client {
             }
         }
 
-        if let Some(trailers) = request.trailers.as_ref() {
-            if !trailers.is_empty() {
-                let normalized_trailers = normalize_headers(trailers);
-                connection
-                    .send_headers(stream_id, &normalized_trailers, true)
-                    .await
-                    .map_err(|e| {
-                        ProtocolError::H2StreamError(H2StreamErrorKind::ProtocolViolation(format!(
-                            "Failed to send trailers: {}",
-                            e
-                        )))
-                    })?;
-            }
+        if !request.trailers.is_empty() {
+            // let normalized_trailers = normalize_headers(&request.trailers.clone()); //
+            connection
+                .send_headers(stream_id, &request.trailers, true)
+                .await
+                .map_err(|e| {
+                    ProtocolError::H2StreamError(H2StreamErrorKind::ProtocolViolation(format!(
+                        "Failed to send trailers: {}",
+                        e
+                    )))
+                })?;
         }
 
         Ok(stream_id)
