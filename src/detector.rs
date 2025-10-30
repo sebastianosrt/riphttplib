@@ -53,11 +53,9 @@ pub fn extract_alt_svc_port(header: Option<&str>) -> Option<u16> {
 //     }
 // }
 
-// TODO detect http1 with a full request, return the headers to check for svc
 pub async fn detect_protocol(url: &str) -> Result<Vec<DetectedProtocol>, ProtocolError> {
     let target = parse_target(url)?;
     let scheme = target.scheme().to_string();
-    let host = target.host().unwrap();
     let port = target.port().unwrap();
     let mut supported = Vec::new();
 

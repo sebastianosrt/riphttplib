@@ -313,12 +313,12 @@ impl H1 {
             let (status, protocol) = Self::parse_status_line(&status_line)?;
             let headers = self.read_header_block(reader, timeouts).await?;
 
-            if status < 200 {
-                // 101 Switching Protocols is a final response (RFC 7231 §6.2.2)
-                if status != 101 {
-                    continue;
-                }
-            }
+            // if status < 200 {
+            //     // 101 Switching Protocols is a final response (RFC 7231 §6.2.2)
+            //     if status != 101 {
+            //         continue;
+            //     }
+            // }
 
             let (body, trailers) = self
                 .read_body(reader, &headers, method, status, timeouts)
@@ -560,9 +560,9 @@ impl H1 {
             return false;
         }
 
-        if (100..200).contains(&status) {
-            return false;
-        }
+        // if (100..200).contains(&status) {
+        //     return false;
+        // }
 
         !matches!(status, 204 | 205 | 304)
     }
