@@ -36,4 +36,5 @@ pub trait Protocol {
         self.response(request).await
     }
 
+    // async fn send_raw()
 }

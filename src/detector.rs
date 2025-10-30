@@ -1,3 +1,4 @@
+use crate::Client;
 use crate::h1::protocol::H1;
 use crate::stream::create_stream;
 use crate::types::protocol::HttpProtocol;
@@ -14,41 +15,46 @@ pub struct DetectedProtocol {
     pub port: Option<u16>,
 }
 
-pub fn extract_alt_svc_port(header: &str) -> Option<u16> {
-    header
-        .split(',')
-        .filter_map(|entry| {
-            let entry = entry.trim();
-            if !entry.starts_with("h3") {
-                return None;
-            }
-
-            let start = entry.find('"')?;
-            let end = entry[start + 1..].find('"')? + start + 1;
-            let value = &entry[start + 1..end];
-
-            let port_part = value.split(':').last()?;
-            port_part.parse::<u16>().ok()
-        })
-        .next()
-}
-
-async fn alt_svc_port(url: &str, timeouts: &ClientTimeouts) -> Option<u16> {
-    let request = match Request::new(url, "HEAD") {
-        Ok(req) => req.timeout(timeouts.clone()).follow_redirects(false),
-        Err(_) => return None,
-    };
-
-    let client = H1::timeouts(timeouts.clone());
-    match timeout(DETECTION_TIMEOUT, client.send_request(request)).await {
-        Ok(Ok(response)) => header_value(&response.headers, "alt-svc")
-            .and_then(extract_alt_svc_port),
-        _ => None,
+pub fn extract_alt_svc_port(header: Option<&str>) -> Option<u16> {
+    match header {
+        Some(header) => {
+            header
+                .split(',')
+                .filter_map(|entry| {
+                    let entry = entry.trim();
+                    if !entry.starts_with("h3") {
+                        return None;
+                    }
+        
+                    let start = entry.find('"')?;
+                    let end = entry[start + 1..].find('"')? + start + 1;
+                    let value = &entry[start + 1..end];
+        
+                    let port_part = value.split(':').last()?;
+                    port_part.parse::<u16>().ok()
+                })
+                .next()
+        },
+        None => None
     }
 }
 
+// async fn alt_svc_port(url: &str, timeouts: &ClientTimeouts) -> Option<u16> {
+//     let request = match Request::new(url, "HEAD") {
+//         Ok(req) => req.timeout(timeouts.clone()).follow_redirects(false),
+//         Err(_) => return None,
+//     };
+
+//     let client = H1::timeouts(timeouts.clone());
+//     match timeout(DETECTION_TIMEOUT, client.send_request(request)).await {
+//         Ok(Ok(response)) => header_value(&response.headers, "alt-svc")
+//             .and_then(extract_alt_svc_port),
+//         _ => None,
+//     }
+// }
+
 // TODO detect http1 with a full request, return the headers to check for svc
-pub async fn detect_protocol(url: &str, skip_h1: bool) -> Result<Vec<DetectedProtocol>, ProtocolError> {
+pub async fn detect_protocol(url: &str) -> Result<Vec<DetectedProtocol>, ProtocolError> {
     let target = parse_target(url)?;
     let scheme = target.scheme().to_string();
     let host = target.host().unwrap();
@@ -62,23 +68,26 @@ pub async fn detect_protocol(url: &str, skip_h1: bool) -> Result<Vec<DetectedPro
     };
 
     // detect h1
-    if skip_h1 || create_stream(&scheme, host, port, timeouts.connect).await.is_ok() {
-        supported.push(DetectedProtocol {
-            protocol: HttpProtocol::Http1,
-            port: Some(port),
-        });
+    match Client::<H1>::head(&url).await {
+        Ok(res) => {
+            supported.push(DetectedProtocol {
+                protocol: HttpProtocol::Http1,
+                port: Some(port),
+            });
+            // detect from svc header h3
+            if let Some(port) = extract_alt_svc_port(header_value(&res.headers, "alt-svc")) {
+                supported.push(DetectedProtocol {
+                    protocol: HttpProtocol::Http3,
+                    port: Some(port),
+                });
+            }
+        },
+        Err(_) => {}
     }
     // detect h2
     if H2Connection::connect(url, &timeouts).await.is_ok() {
         supported.push(DetectedProtocol {
             protocol: if scheme == "http" { HttpProtocol::H2C } else { HttpProtocol::Http2 },
-            port: Some(port),
-        });
-    }
-    // detect h3
-    if let Some(port) = alt_svc_port(url, &timeouts).await {
-        supported.push(DetectedProtocol {
-            protocol: HttpProtocol::Http3,
             port: Some(port),
         });
     }

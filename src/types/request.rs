@@ -349,7 +349,7 @@ impl Request {
         RequestBuilder::new(target, method)
     }
 
-    pub fn header(mut self, header: Header) -> Self {
+    pub fn header(mut self, header: Header) -> Self { // TODO accept a string
         self.header_mut(header);
         self
     }

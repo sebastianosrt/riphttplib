@@ -581,7 +581,10 @@ impl H1 {
         chunked_body.extend_from_slice(final_chunk.as_bytes());
 
         for trailer in trailers {
-            let trailer_line = format!("{}{}", trailer.to_string(), CRLF);
+            let mut trailer_line = format!("{}{}", trailer.to_string(), CRLF);
+            if matches!(trailer.to_string().as_str(), "\n" | "\r" | "\r\n") {
+                trailer_line = trailer.to_string();
+            }
             chunked_body.extend_from_slice(trailer_line.as_bytes());
         }
 

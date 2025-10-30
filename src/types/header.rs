@@ -5,15 +5,15 @@ pub struct Header {
 }
 
 impl Header {
-    pub fn new(name: String, value: String) -> Self {
+    pub fn new(name: String, value: String) -> Self { // TODO consider using &str
         Self {
-            name: name.to_lowercase(),
+            name: name, // TODO make sure in http2/3 headers are lowercase
             value: Some(value),
         }
     }
 
     pub fn new_valueless(name: String) -> Self {
-        Self { name: name.to_lowercase(), value: None }
+        Self { name: name, value: None }
     }
 
     pub fn to_string(&self) -> String {

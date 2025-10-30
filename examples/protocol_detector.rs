@@ -10,7 +10,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Detecting supported protocols for {}", url);
 
     let detect_start = Instant::now();
-    let result = detect_protocol(url, false).await;
+    let result = detect_protocol(url).await;
     let detect_elapsed = detect_start.elapsed();
 
     match result {
