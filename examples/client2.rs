@@ -1,11 +1,11 @@
 use riphttplib::types::protocol::Client;
-use riphttplib::H3Client;
-use riphttplib::H2Client;
-use riphttplib::H1Client;
+use riphttplib::H3;
+use riphttplib::H2;
+use riphttplib::H1;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let response = Client::<H2Client>::post("https://httpbin.org/post")
+    let response = Client::<H2>::post("https://httpbin.org/post")
         .header("user-agent: aa")
         .headers(["first: f", "second: saa"])
         .data("dasdasdas")

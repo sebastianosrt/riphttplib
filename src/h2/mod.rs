@@ -1,7 +1,7 @@
-pub mod client;
+pub mod protocol;
 pub mod connection;
 pub mod consts;
 pub mod framing;
 pub mod hpack;
 
-pub use client::H2Client;
+pub use protocol::H2;

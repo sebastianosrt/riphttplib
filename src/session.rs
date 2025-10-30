@@ -1,6 +1,6 @@
-use crate::h1::client::H1Client;
-use crate::h2::client::H2Client;
-use crate::h3::client::H3Client;
+use crate::h1::protocol::H1;
+use crate::h2::protocol::H2;
+use crate::h3::protocol::H3;
 use crate::types::{ClientTimeouts, Header, ProtocolError, ProxySettings, Request, Response};
 use bytes::Bytes;
 use std::collections::BTreeMap;
@@ -201,13 +201,13 @@ trait SessionInner {
 }
 
 pub struct H1Session {
-    client: H1Client,
+    client: H1,
     default_headers: Vec<Header>,
     pub cookies: CookieStore,
 }
 
 impl H1Session {
-    pub(crate) fn new(client: H1Client) -> Self {
+    pub(crate) fn new(client: H1) -> Self {
         Self {
             client,
             default_headers: Vec::new(),
@@ -462,7 +462,7 @@ impl H1Session {
         .await
     }
 
-    pub fn client(&self) -> &H1Client {
+    pub fn client(&self) -> &H1 {
         &self.client
     }
 }
@@ -486,13 +486,13 @@ impl SessionInner for H1Session {
 }
 
 pub struct H2Session {
-    client: H2Client,
+    client: H2,
     default_headers: Vec<Header>,
     pub cookies: CookieStore,
 }
 
 impl H2Session {
-    pub(crate) fn new(client: H2Client) -> Self {
+    pub(crate) fn new(client: H2) -> Self {
         Self {
             client,
             default_headers: Vec::new(),
@@ -747,7 +747,7 @@ impl H2Session {
         .await
     }
 
-    pub fn client(&self) -> &H2Client {
+    pub fn client(&self) -> &H2 {
         &self.client
     }
 }
@@ -771,13 +771,13 @@ impl SessionInner for H2Session {
 }
 
 pub struct H3Session {
-    client: H3Client,
+    client: H3,
     default_headers: Vec<Header>,
     pub cookies: CookieStore,
 }
 
 impl H3Session {
-    pub(crate) fn new(client: H3Client) -> Self {
+    pub(crate) fn new(client: H3) -> Self {
         Self {
             client,
             default_headers: Vec::new(),
@@ -1032,7 +1032,7 @@ impl H3Session {
         .await
     }
 
-    pub fn client(&self) -> &H3Client {
+    pub fn client(&self) -> &H3 {
         &self.client
     }
 }

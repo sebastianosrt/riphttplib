@@ -55,7 +55,7 @@ impl Target {
     // async fn test_http1_support(&self, timeouts: &ClientTimeouts) -> bool {
     //     match Request::new(self.as_str(), "HEAD") {
     //         Ok(request) => {
-    //             let client = H1Client::timeouts(timeouts.clone());
+    //             let client = H1::timeouts(timeouts.clone());
     //             client.send_request(request).await.is_ok()
     //         }
     //         Err(_) => false,
@@ -65,7 +65,7 @@ impl Target {
     // async fn test_http2_support(&self, timeouts: &ClientTimeouts) -> bool {
     //     match Request::new(self.as_str(), "HEAD") {
     //         Ok(request) => {
-    //             let client = H2Client::timeouts(timeouts.clone());
+    //             let client = H2::timeouts(timeouts.clone());
     //             client.send_request(request).await.is_ok()
     //         }
     //         Err(_) => false,
@@ -80,7 +80,7 @@ impl Target {
 
     //     match Request::new(self.as_str(), "HEAD") {
     //         Ok(request) => {
-    //             let client = H3Client::timeouts(timeouts.clone());
+    //             let client = H3::timeouts(timeouts.clone());
     //             client.send_request(request).await.is_ok()
     //         }
     //         Err(_) => false,

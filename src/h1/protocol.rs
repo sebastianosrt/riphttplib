@@ -9,11 +9,11 @@ use bytes::Bytes;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 #[derive(Clone)]
-pub struct H1Client {
+pub struct H1 {
     timeouts: ClientTimeouts,
 }
 
-impl H1Client {
+impl H1 {
     pub fn new() -> Self {
         Self::timeouts(ClientTimeouts::default())
     }
@@ -608,7 +608,7 @@ impl H1Client {
 }
 
 #[async_trait(?Send)]
-impl Protocol for H1Client {
+impl Protocol for H1 {
     async fn response(&self, request: Request) -> Result<Response, ProtocolError> {
         self.send_request(request).await
     }

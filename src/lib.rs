@@ -8,9 +8,9 @@ pub mod types;
 pub mod utils;
 pub mod detector;
 
-pub use h1::client::H1Client;
-pub use h2::client::H2Client;
-pub use h3::client::H3Client;
+pub use h1::protocol::H1;
+pub use h2::protocol::H2;
+pub use h3::protocol::H3;
 pub use session::*;
 pub use stream::*;
 pub use types::*;

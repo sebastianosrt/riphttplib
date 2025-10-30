@@ -22,12 +22,12 @@ feel free to open a pr or directly contact me
 ## Quick Start
 
 ```rust
-use riphttplib::h1::H1Client;
+use riphttplib::h1::H1;
 use riphttplib::types::{Request, Header};
 use riphttplib::utils::parse_target;
 
 # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
-let client = H1Client::new();
+let client = H1::new();
 let target = parse_target("http://example.com/").expect("valid url");
 
 let request = Request::new("GET")

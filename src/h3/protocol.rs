@@ -11,11 +11,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 #[derive(Clone)]
-pub struct H3Client {
+pub struct H3 {
     timeouts: ClientTimeouts,
 }
 
-impl H3Client {
+impl H3 {
     pub fn new() -> Self {
         Self::timeouts(ClientTimeouts::default())
     }
@@ -297,7 +297,7 @@ impl H3Client {
 }
 
 #[async_trait(?Send)]
-impl Protocol for H3Client {
+impl Protocol for H3 {
     async fn response(&self, request: Request) -> Result<Response, ProtocolError> {
         self.send_request(request).await
     }

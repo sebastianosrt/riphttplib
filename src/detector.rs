@@ -1,4 +1,4 @@
-use crate::h1::client::H1Client;
+use crate::h1::protocol::H1;
 use crate::stream::create_stream;
 use crate::types::protocol::HttpProtocol;
 use crate::types::{ClientTimeouts, ProtocolError, Request};
@@ -39,7 +39,7 @@ async fn alt_svc_port(url: &str, timeouts: &ClientTimeouts) -> Option<u16> {
         Err(_) => return None,
     };
 
-    let client = H1Client::timeouts(timeouts.clone());
+    let client = H1::timeouts(timeouts.clone());
     match timeout(DETECTION_TIMEOUT, client.send_request(request)).await {
         Ok(Ok(response)) => header_value(&response.headers, "alt-svc")
             .and_then(extract_alt_svc_port),

@@ -9,11 +9,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 #[derive(Clone)]
-pub struct H2Client {
+pub struct H2 {
     timeouts: ClientTimeouts,
 }
 
-impl H2Client {
+impl H2 {
     pub fn new() -> Self {
         Self::timeouts(ClientTimeouts::default())
     }
@@ -136,7 +136,7 @@ impl H2Client {
 }
 
 #[async_trait(?Send)]
-impl Protocol for H2Client {
+impl Protocol for H2 {
     async fn response(&self, request: Request) -> Result<Response, ProtocolError> {
         self.send_request(request).await
     }

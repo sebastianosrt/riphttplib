@@ -1,6 +1,6 @@
-use riphttplib::h1::H1Client;
-use riphttplib::h2::H2Client;
-use riphttplib::h3::H3Client;
+use riphttplib::h1::H1;
+use riphttplib::h2::H2;
+use riphttplib::h3::H3;
 use riphttplib::types::{ClientTimeouts, Header, Protocol, Request};
 use serde_json::json;
 use std::time::Duration;
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     {
-        let client = H2Client::new();
+        let client = H2::new();
         let response = client.response(request.clone()).await?;
 
         println!("\nHTTP/2");

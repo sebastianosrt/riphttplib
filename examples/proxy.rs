@@ -1,9 +1,9 @@
-use riphttplib::h1::H1Client;
+use riphttplib::h1::H1;
 use riphttplib::types::{ProxySettings, Request};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = H1Client::new();
+    let client = H1::new();
 
     let _proxy_settings = ProxySettings::parse(
         Some("http://localhost:8081"),

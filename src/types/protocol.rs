@@ -2,7 +2,7 @@ use super::error::ProtocolError;
 use super::timeouts::ClientTimeouts;
 use super::{Request, Response};
 use crate::utils::parse_header;
-use crate::{H1Client, H2Client, H3Client};
+use crate::{H1, H2, H3};
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde_json::Value;
@@ -39,7 +39,7 @@ pub trait Protocol {
     }
 }
 
-pub struct Client<C = H1Client>
+pub struct Client<C = H1>
 where
     C: Protocol + DefaultClient + Send + Unpin + 'static,
 {
@@ -50,21 +50,21 @@ pub trait DefaultClient: Protocol + Send + Unpin + 'static {
     fn default_client() -> Self;
 }
 
-impl DefaultClient for H1Client {
+impl DefaultClient for H1 {
     fn default_client() -> Self {
-        H1Client::new()
+        H1::new()
     }
 }
 
-impl DefaultClient for H2Client {
+impl DefaultClient for H2 {
     fn default_client() -> Self {
-        H2Client::new()
+        H2::new()
     }
 }
 
-impl DefaultClient for H3Client {
+impl DefaultClient for H3 {
     fn default_client() -> Self {
-        H3Client::new()
+        H3::new()
     }
 }
 

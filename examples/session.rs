@@ -1,8 +1,8 @@
-use riphttplib::{H1Client, Header};
+use riphttplib::{H1, Header};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut session = H1Client::new().session();
+    let mut session = H1::new().session();
 
     session.add_default_header(Header::new(
         "user-agent".into(),

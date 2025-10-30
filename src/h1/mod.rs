@@ -1,3 +1,3 @@
-pub mod client;
+pub mod protocol;
 
-pub use client::H1Client;
+pub use protocol::H1;
