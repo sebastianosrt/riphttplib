@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         write: Some(IO_TIMEOUT),
     };
 
-    let request = Request::new("https://turnip.prd.mangosteen.sec.xvservice.net", "POST")?
+    let request = Request::new("https://lahore.wordcamp.org", "POST")?
             .header("user-agent: Mozilla/5.0 (X11; Linux x86_64; rv:142.0) Gecko/20100101 Firefox/142.0")
             .header("bug-bounty: scan")
             .header("te: trailers")
@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // let client = H3::new();
         // let response = client.response(request.clone()).await?;
         
-        let response = H1::timeouts(timeouts.clone()).send_request(request).await?;
+        let response = H3::timeouts(timeouts.clone()).send_request(request).await?;
 
         println!("\n{} {}", response.protocol, response.status);
         for header in &response.headers {

@@ -1,8 +1,8 @@
 use crate::stream::{create_stream, TransportStream};
 use crate::types::{ClientTimeouts, Header, Protocol, ProtocolError, Request, Response};
 use crate::utils::{
-    apply_redirect, ensure_user_agent, timeout_result, CHUNKED_ENCODING, CONTENT_LENGTH_HEADER,
-    CRLF, HOST_HEADER, HTTP_VERSION_1_1, TRANSFER_ENCODING_HEADER,
+    apply_redirect, timeout_result, CHUNKED_ENCODING, CONTENT_LENGTH_HEADER, CRLF, HOST_HEADER,
+    HTTP_VERSION_1_1, TRANSFER_ENCODING_HEADER,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -169,8 +169,8 @@ impl H1 {
         let path = request.path();
 
         let mut headers = request.prepare_headers();
+        // TODO add connection header
         let trailers = request.trailers.clone();
-        ensure_user_agent(&mut headers);
 
         req.extend_from_slice(
             format!("{} {} {}{}", request.method, path, HTTP_VERSION_1_1, CRLF).as_bytes(),

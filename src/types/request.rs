@@ -542,11 +542,7 @@ impl Request {
             .filter(|h| !h.name.starts_with(':'))
             .cloned()
             .collect();
-
-        for header in &mut headers {
-            header.normalize();
-        }
-
+        
         if let Some(cookie_value) = self.cookie_header_value() {
             if !Self::has_header(&headers, COOKIE_HEADER) {
                 headers.push(Header::new(

@@ -59,7 +59,11 @@ impl H3 {
 
         let prepared = request.prepare_request()?;
         let mut header_block_entries = prepared.pseudo_headers.clone();
-        header_block_entries.extend(prepared.headers.clone());
+        let mut normalized_headers = prepared.headers.clone();
+        for header in &mut normalized_headers {
+            header.normalize();
+        }
+        header_block_entries.extend(normalized_headers);
 
         let header_block = timeout_result(
             timeouts.write,

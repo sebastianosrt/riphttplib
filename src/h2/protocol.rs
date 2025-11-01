@@ -36,7 +36,11 @@ impl H2 {
 
         let prepared = request.prepare_request()?;
         let mut header_block = prepared.pseudo_headers.clone();
-        header_block.extend(prepared.headers.clone());
+        let mut normalized_headers = prepared.headers.clone();
+        for header in &mut normalized_headers {
+            header.normalize();
+        }
+        header_block.extend(normalized_headers);
 
         let has_body = prepared.body.as_ref().map_or(false, |body| !body.is_empty());
         let has_trailers = !prepared.trailers.is_empty();

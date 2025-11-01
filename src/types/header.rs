@@ -7,7 +7,7 @@ pub struct Header {
 impl Header {
     pub fn new(name: String, value: String) -> Self { // TODO consider using &str
         Self {
-            name: name, // TODO make sure in http2/3 headers are lowercase
+            name: name,
             value: Some(value),
         }
     }
