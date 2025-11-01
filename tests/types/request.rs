@@ -82,9 +82,9 @@ mod tests {
     #[test]
     fn prepare_headers_respects_existing_values() -> Result<(), ProtocolError> {
         let request = Request::new("https://example.com", "POST")?
-            .header(Header::new("Content-Type".into(), "text/plain".into()))
-            .header(Header::new("User-Agent".into(), "custom-agent".into()))
-            .header(Header::new("Cookie".into(), "manual=1".into()));
+            .header("Content-Type: text/plain")
+            .header("User-Agent: custom-agent")
+            .header("Cookie: manual=1");
 
         let headers = request.prepare_headers();
         assert_eq!(header_count(&headers, "content-type"), 1);
@@ -126,7 +126,7 @@ mod tests {
             .params(vec![("k", "v")])
             .cookies(vec![("session", "abc")])
             .data(vec![("foo", "bar")])
-            .trailers(vec![Header::new("checksum".into(), "123".into())]);
+            .trailers(vec!["checksum: 123".to_string()]);
 
         let prepared = request.prepare_request()?;
         assert_eq!(prepared.method, "POST");

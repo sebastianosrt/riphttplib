@@ -5,6 +5,7 @@ use async_trait::async_trait;
 mod client;
 mod client_request;
 
+use bytes::Bytes;
 pub use client::{Client, DefaultClient, TypedClient};
 pub use client_request::ClientRequest;
 
@@ -36,5 +37,9 @@ pub trait Protocol {
         self.response(request).await
     }
 
-    // async fn send_raw()
+    async fn send_raw(&self, _target: &str, _request: Bytes) -> Result<Response, ProtocolError> {
+        Err(ProtocolError::RequestFailed(
+            "Raw requests are not supported for this protocol".to_string(),
+        ))
+    }
 }

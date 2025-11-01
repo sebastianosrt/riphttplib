@@ -123,7 +123,8 @@ fn build_request(
     let mut request = Request::new(url, method)?;
 
     if let Some(headers) = &options.headers {
-        request = request.headers(headers.clone());
+        let serialized: Vec<String> = headers.iter().map(|h| h.to_string()).collect();
+        request = request.headers(serialized);
     }
 
     if let Some(body) = &options.body {
@@ -131,7 +132,8 @@ fn build_request(
     }
 
     if let Some(trailers) = &options.trailers {
-        request = request.trailers(trailers.clone());
+        let serialized: Vec<String> = trailers.iter().map(|h| h.to_string()).collect();
+        request = request.trailers(serialized);
     }
 
     if let Some(cookies) = &options.cookies {

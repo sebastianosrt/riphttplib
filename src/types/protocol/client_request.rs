@@ -28,16 +28,12 @@ where
         }
     }
 
-    pub fn header(mut self, header: impl AsRef<str>) -> Self {
+    pub fn header(mut self, header: &str) -> Self {
         RequestBuilderOps::header(&mut self, header);
         self
     }
 
-    pub fn headers<I, S>(mut self, headers: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
+    pub fn headers(mut self, headers: Vec<String>) -> Self {
         RequestBuilderOps::headers(&mut self, headers);
         self
     }
@@ -67,16 +63,12 @@ where
         self
     }
 
-    pub fn trailer(mut self, trailer: impl AsRef<str>) -> Self {
+    pub fn trailer(mut self, trailer: &str) -> Self {
         RequestBuilderOps::trailer(&mut self, trailer);
         self
     }
 
-    pub fn trailers<I, S>(mut self, trailers: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
+    pub fn trailers(mut self, trailers: Vec<String>) -> Self {
         RequestBuilderOps::trailers(&mut self, trailers);
         self
     }

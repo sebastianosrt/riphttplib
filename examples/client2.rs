@@ -7,7 +7,7 @@ use riphttplib::H1;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response = Client::<H2>::post("https://httpbin.org/post")
         .header("user-agent: aa")
-        .headers(["first: f", "second: saa"])
+        .headers(vec!["first: f".to_string(), "second: saa".to_string()])
         .data("dasdasdas")
         // .trailer("ssss: ssss")
         .await?;

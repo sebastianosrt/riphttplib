@@ -16,6 +16,11 @@ impl Header {
         Self { name: name, value: None }
     }
 
+    pub fn normalize(&mut self) -> &mut Self {
+        self.name.make_ascii_lowercase();
+        self
+    }
+
     pub fn to_string(&self) -> String {
         if let Some(ref value) = self.value {
             format!("{}: {}", self.name, value)

@@ -168,7 +168,7 @@ impl H1 {
         let mut req = Vec::new();
         let path = request.path();
 
-        let mut headers = request.effective_headers();
+        let mut headers = request.prepare_headers();
         let trailers = request.trailers.clone();
         ensure_user_agent(&mut headers);
 
@@ -555,14 +555,11 @@ impl H1 {
         Ok((Bytes::from(body), trailers))
     }
 
+    // TODO write better
     fn response_has_body(method: &str, status: u16) -> bool {
-        if method.eq_ignore_ascii_case("HEAD") {
+        if method.eq_ignore_ascii_case("HEAD") || (100..200).contains(&status) {
             return false;
         }
-
-        // if (100..200).contains(&status) {
-        //     return false;
-        // }
 
         !matches!(status, 204 | 205 | 304)
     }
@@ -594,6 +591,7 @@ impl H1 {
     }
 
     pub fn parse_status_line(status_line: &str) -> Result<(u16, String), ProtocolError> {
+        // TODO what if it is HTTP/0.9
         let parts: Vec<&str> = status_line.trim().split_whitespace().collect();
         if parts.len() < 2 {
             return Err(ProtocolError::InvalidResponse(
@@ -614,5 +612,78 @@ impl H1 {
 impl Protocol for H1 {
     async fn response(&self, request: Request) -> Result<Response, ProtocolError> {
         self.send_request(request).await
+    }
+
+    async fn send_raw(&self, target: &str, raw_request: Bytes) -> Result<Response, ProtocolError> {
+        if raw_request.is_empty() {
+            return Err(ProtocolError::RequestFailed(
+                "Raw request payload cannot be empty".to_string(),
+            ));
+        }
+
+        let request = Request::new(target, "RAW")?;
+        let timeouts = request.timeouts(&self.timeouts);
+        let mut stream = self.open_stream(&request, &timeouts).await?;
+
+        self.write_to_stream(&mut stream, raw_request.as_ref(), timeouts.write)
+            .await?;
+
+        let mut raw_response = Vec::new();
+
+        match &mut stream {
+            TransportStream::Tcp(tcp) => {
+                tcp.read_to_end(&mut raw_response)
+                    .await
+                    .map_err(ProtocolError::Io)?;
+            }
+            TransportStream::Tls(tls) => {
+                tls.read_to_end(&mut raw_response)
+                    .await
+                    .map_err(ProtocolError::Io)?;
+            }
+        }
+
+        let response_str = std::str::from_utf8(&raw_response)
+            .map_err(|_| ProtocolError::InvalidResponse("Response was not valid UTF-8".into()))?;
+
+        let (status_line, rest) = response_str
+            .split_once(CRLF)
+            .ok_or_else(|| ProtocolError::InvalidResponse("Missing status line".into()))?;
+
+        let (status, protocol) = Self::parse_status_line(status_line)?;
+
+        let mut header_lines = Vec::new();
+        let mut body_start = 0usize;
+        let mut offset = status_line.len() + CRLF.len();
+
+        for line in rest.split(CRLF) {
+            if line.is_empty() {
+                body_start = offset + CRLF.len();
+                break;
+            }
+            header_lines.push(line.to_string());
+            offset += line.len() + CRLF.len();
+        }
+
+        let headers = header_lines
+            .into_iter()
+            .filter_map(|line| line.split_once(':').map(|(name, value)| Header::new(name.to_lowercase(), value.trim().to_string())))
+            .collect::<Vec<_>>();
+
+        let body = if body_start < raw_response.len() {
+            Bytes::copy_from_slice(&raw_response[body_start..])
+        } else {
+            Bytes::new()
+        };
+
+        Ok(Response {
+            status,
+            protocol,
+            headers,
+            body,
+            trailers: None,
+            frames: None,
+            cookies: Vec::new(),
+        })
     }
 }

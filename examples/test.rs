@@ -1,7 +1,7 @@
 use riphttplib::h1::H1;
 use riphttplib::h2::H2;
 use riphttplib::h3::H3;
-use riphttplib::types::{ClientTimeouts, Header, Protocol, Request};
+use riphttplib::types::{ClientTimeouts, Protocol, Request};
 use serde_json::json;
 use std::time::Duration;
 
@@ -16,17 +16,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         write: Some(IO_TIMEOUT),
     };
 
-    let request = Request::new("https://mail1.www.cozykitchencovers.etsy.com", "POST")?
-            .header(Header::new(
-                "user-agent".to_string(),
-                "Mozilla/5.0 (X11; Linux x86_64; rv:142.0) Gecko/20100101 Firefox/142.0".to_string(),
-            ))
-            .header(Header::new("bug-bounty".to_string(), "scan".to_string()))
-            .header(Header::new("te".to_string(), "trailers".to_string()))
-            .body("aaaaaaaaa")
-            .trailer(Header::new("test".to_string(), "test".to_string()))
-            .trailer(Header::new("content-length".to_string(),"100000".to_string(),))
-            // .trailer(Header::new("expect".to_string(), "100-continue".to_string()))
+    let request = Request::new("https://turnip.prd.mangosteen.sec.xvservice.net", "POST")?
+            .header("user-agent: Mozilla/5.0 (X11; Linux x86_64; rv:142.0) Gecko/20100101 Firefox/142.0")
+            .header("bug-bounty: scan")
+            .header("te: trailers")
+            .body("aaaaaaa")
+            .trailer("test: test")
+            .trailer("test: testaaaaaaaaaaaaaaaa")
+            .trailer("content-length: 10000")
+            .trailer("expect: 100-continue")
             .timeout(timeouts.clone())
             .follow_redirects(false);
     {
@@ -34,11 +32,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // let client = H3::new();
         // let response = client.response(request.clone()).await?;
         
-        let response = H3::timeouts(timeouts.clone()).send_request(request).await?;
+        let response = H1::timeouts(timeouts.clone()).send_request(request).await?;
 
         println!("\n{} {}", response.protocol, response.status);
         for header in &response.headers {
             println!("{}", header);
+        }
+        match response.trailers {
+            Some(val) => {
+                println!("\ntrailers\n");
+                for header in &val {
+                    println!("{}", header);
+                }
+            },
+            None => {}
         }
         // println!("\n{}", response.text());
         // println!("\n{}", String::from_utf8_lossy(&response.body));

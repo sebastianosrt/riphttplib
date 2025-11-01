@@ -1,12 +1,10 @@
 use crate::Client;
 use crate::h1::protocol::H1;
-use crate::stream::create_stream;
 use crate::types::protocol::HttpProtocol;
-use crate::types::{ClientTimeouts, ProtocolError, Request};
+use crate::types::{ClientTimeouts, ProtocolError};
 use crate::h2::connection::H2Connection;
 use crate::utils::{header_value, parse_target};
 use std::time::Duration;
-use tokio::time::timeout;
 
 const DETECTION_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -38,20 +36,6 @@ pub fn extract_alt_svc_port(header: Option<&str>) -> Option<u16> {
         None => None
     }
 }
-
-// async fn alt_svc_port(url: &str, timeouts: &ClientTimeouts) -> Option<u16> {
-//     let request = match Request::new(url, "HEAD") {
-//         Ok(req) => req.timeout(timeouts.clone()).follow_redirects(false),
-//         Err(_) => return None,
-//     };
-
-//     let client = H1::timeouts(timeouts.clone());
-//     match timeout(DETECTION_TIMEOUT, client.send_request(request)).await {
-//         Ok(Ok(response)) => header_value(&response.headers, "alt-svc")
-//             .and_then(extract_alt_svc_port),
-//         _ => None,
-//     }
-// }
 
 pub async fn detect_protocol(url: &str) -> Result<Vec<DetectedProtocol>, ProtocolError> {
     let target = parse_target(url)?;

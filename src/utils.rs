@@ -68,20 +68,20 @@ pub fn parse_header(header: &str) -> Option<Header> {
             let split_pos = colon_pos + 1;
             let name = header[..=split_pos - 1].to_string();
             let value = convert_escape_sequences(header[split_pos + 1..].trim_start());
-            Some(Header::new(name.to_lowercase(), value))
+            Some(Header::new(name, value))
         } else {
-            Some(Header::new_valueless(header.to_string().to_lowercase()))
+            Some(Header::new_valueless(header.to_string()))
         }
     } else {
         // Regular header, split on first colon
         if let Some((name, value)) = header.split_once(':') {
             Some(Header::new(
-                name.to_string().to_lowercase(),
+                name.to_string(),
                 convert_escape_sequences(value.trim_start()),
             ))
+        // valueless header
         } else {
-            // valueless header
-            Some(Header::new_valueless(header.to_string().to_lowercase()))
+            Some(Header::new_valueless(header.to_string()))
         }
     }
 }

@@ -1,25 +1,22 @@
 use riphttplib::h1::H1;
 use riphttplib::h2::H2;
 use riphttplib::h3::H3;
-use riphttplib::types::{ClientTimeouts, Header, Protocol, Request};
+use riphttplib::types::{ClientTimeouts, Protocol, Request};
 use serde_json::json;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let headers = vec![
-        Header::new("accept".into(), "text/html".into()),
-        Header::new("trailers".into(), "trailer".into()),
-        Header::new("TE".into(), "trailers".into()),
+        "accept: text/html".to_string(),
+        "trailers: trailer".to_string(),
+        "TE: trailers".to_string(),
     ];
     let body = "test";
-    let trailers = vec![Header::new("trailer".into(), "test".into())];
+    let trailers = vec!["trailer: test".to_string()];
 
     let request = Request::new("https://quic.tech:8443", "GET")?
-        .header(Header::new(
-            "aser-ugent".to_string(),
-            "riphttplib/0.1.0".to_string(),
-        ))
+        .header("aser-ugent: riphttplib/0.1.0")
         // .headers(headers)
         .body(body)
         // .json(json!({ "test": "value" }))

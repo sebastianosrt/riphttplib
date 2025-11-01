@@ -1,5 +1,6 @@
 use super::Header;
 
+// TODO maybe duplicate code
 pub fn parse_set_cookie(input: &str) -> Option<(String, String)> {
     let mut parts = input.split(';');
     let pair = parts.next()?.trim();

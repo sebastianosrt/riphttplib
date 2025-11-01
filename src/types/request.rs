@@ -6,7 +6,8 @@ use super::timeouts::ClientTimeouts;
 use super::{Header, Target};
 use crate::types::proxy::{ProxyConfig, ProxySettings};
 use crate::utils::{
-    ensure_user_agent, parse_target, APPLICATION_JSON, CONTENT_TYPE_HEADER, COOKIE_HEADER,
+    ensure_user_agent, parse_headers, parse_target, APPLICATION_JSON, CONTENT_TYPE_HEADER,
+    COOKIE_HEADER,
 };
 use crate::parse_header;
 
@@ -103,14 +104,14 @@ pub fn take(&mut self) -> Result<Request, ProtocolError> {
 pub trait RequestBuilderOps {
     fn builder_mut(&mut self) -> &mut RequestBuilder;
 
-    fn header(&mut self, header: impl AsRef<str>) -> &mut Self {
+    fn header(&mut self, header: &str) -> &mut Self {
         let builder = self.builder_mut();
         if builder.inner.is_err() {
             return self;
         }
 
-        let header_text = header.as_ref().trim().to_string();
-        let parsed = match parse_header(&header_text) {
+        let header_text = header.trim();
+        let parsed = match parse_header(header_text) {
             Some(parsed) => parsed,
             None => {
                 builder.inner = Err(ProtocolError::MalformedHeaders(format!(
@@ -128,28 +129,24 @@ pub trait RequestBuilderOps {
         self
     }
 
-    fn headers<I, S>(&mut self, headers: I) -> &mut Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
+    fn headers(&mut self, headers: Vec<String>) -> &mut Self {
         for header in headers {
             if self.builder_mut().inner.is_err() {
                 break;
             }
-            self.header(header);
+            self.header(header.as_str());
         }
         self
     }
 
-    fn trailer(&mut self, trailer: impl AsRef<str>) -> &mut Self {
+    fn trailer(&mut self, trailer: &str) -> &mut Self {
         let builder = self.builder_mut();
         if builder.inner.is_err() {
             return self;
         }
 
-        let trailer_text = trailer.as_ref().trim().to_string();
-        let parsed = match parse_header(&trailer_text) {
+        let trailer_text = trailer.trim();
+        let parsed = match parse_header(trailer_text) {
             Some(parsed) => parsed,
             None => {
                 builder.inner = Err(ProtocolError::MalformedHeaders(format!(
@@ -167,16 +164,12 @@ pub trait RequestBuilderOps {
         self
     }
 
-    fn trailers<I, S>(&mut self, trailers: I) -> &mut Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
+    fn trailers(&mut self, trailers: Vec<String>) -> &mut Self {
         for trailer in trailers {
             if self.builder_mut().inner.is_err() {
                 break;
             }
-            self.trailer(trailer);
+            self.trailer(trailer.as_str());
         }
         self
     }
@@ -248,27 +241,19 @@ impl RequestBuilderOps for RequestBuilder {
 }
 
 impl RequestBuilder {
-    pub fn header(&mut self, header: impl AsRef<str>) -> &mut Self {
+    pub fn header(&mut self, header: &str) -> &mut Self {
         RequestBuilderOps::header(self, header)
     }
 
-    pub fn headers<I, S>(&mut self, headers: I) -> &mut Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
+    pub fn headers(&mut self, headers: Vec<String>) -> &mut Self {
         RequestBuilderOps::headers(self, headers)
     }
 
-    pub fn trailer(&mut self, trailer: impl AsRef<str>) -> &mut Self {
+    pub fn trailer(&mut self, trailer: &str) -> &mut Self {
         RequestBuilderOps::trailer(self, trailer)
     }
 
-    pub fn trailers<I, S>(&mut self, trailers: I) -> &mut Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
+    pub fn trailers(&mut self, trailers: Vec<String>) -> &mut Self {
         RequestBuilderOps::trailers(self, trailers)
     }
 
@@ -349,23 +334,29 @@ impl Request {
         RequestBuilder::new(target, method)
     }
 
-    pub fn header(mut self, header: Header) -> Self { // TODO accept a string
-        self.header_mut(header);
+    pub fn header(mut self, header: &str) -> Self {
+        let parsed = parse_header(header)
+            .unwrap_or_else(|| panic!("Invalid header '{}': failed to parse", header));
+        self.header_mut(parsed);
         self
     }
 
-    pub fn headers(mut self, headers: Vec<Header>) -> Self {
-        self.headers_mut(headers);
+    pub fn headers(mut self, headers: Vec<String>) -> Self {
+        let parsed = parse_headers(headers);
+        self.headers_mut(parsed);
         self
     }
 
-    pub fn trailer(mut self, header: Header) -> Self {
-        self.trailer_mut(header);
+    pub fn trailer(mut self, header: &str) -> Self {
+        let parsed = parse_header(header)
+            .unwrap_or_else(|| panic!("Invalid trailer '{}': failed to parse", header));
+        self.trailer_mut(parsed);
         self
     }
 
-    pub fn trailers(mut self, headers: Vec<Header>) -> Self {
-        self.trailers_mut(headers);
+    pub fn trailers(mut self, headers: Vec<String>) -> Self {
+        let parsed = parse_headers(headers);
+        self.trailers_mut(parsed);
         self
     }
 
@@ -506,6 +497,7 @@ impl Request {
                 None => path.to_string(),
             }
         } else {
+            // TODO write better
             // Estimate capacity to reduce allocations
             let estimated_param_size: usize = self
                 .params
@@ -543,13 +535,17 @@ impl Request {
         }
     }
 
-    fn prepare_headers(&self) -> Vec<Header> {
+    pub fn prepare_headers(&self) -> Vec<Header> {
         let mut headers: Vec<Header> = self
             .headers
             .iter()
             .filter(|h| !h.name.starts_with(':'))
             .cloned()
             .collect();
+
+        for header in &mut headers {
+            header.normalize();
+        }
 
         if let Some(cookie_value) = self.cookie_header_value() {
             if !Self::has_header(&headers, COOKIE_HEADER) {
@@ -579,10 +575,6 @@ impl Request {
         headers
     }
 
-    pub fn effective_headers(&self) -> Vec<Header> {
-        self.prepare_headers()
-    }
-
     pub fn prepare_pseudo_headers(request: &Request) -> Result<Vec<Header>, ProtocolError> {
         let mut pseudo_headers: Vec<Header> = request
             .headers
@@ -597,6 +589,7 @@ impl Request {
                 Header::new(":method".to_string(), request.method.clone()),
             );
         }
+        // only :method is checked, need also authority, path ....
 
         let method = request.method.to_uppercase();
         // TODO check correctness
@@ -613,6 +606,7 @@ impl Request {
                 pseudo_headers.retain(|h| h.name != ":scheme" && h.name != ":path");
             }
             "OPTIONS" => {
+                // TOOD ??? remove path_only ???
                 let path_value = if request.target.path_only() == "*" {
                     "*".to_string()
                 } else {
@@ -654,7 +648,7 @@ impl Request {
             }
         }
 
-        Ok(pseudo_headers) // TODO normalization should happen only in Header::new
+        Ok(pseudo_headers)
     }
 
     fn cookie_header_value(&self) -> Option<String> {
