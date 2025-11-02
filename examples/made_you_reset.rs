@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timeout = ClientTimeouts::disabled();
 
     let req = Request::new(url, "GET")?;
-    let headers =Request::prepare_pseudo_headers(&req)?;
+    let headers = Request::prepare_pseudo_headers(&req)?;
     let mut connection = H2Connection::connect(url, &timeout).await?;
 
     for _i in 1..2000000000 {

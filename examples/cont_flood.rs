@@ -4,7 +4,6 @@ use riphttplib::{FrameBuilderExt, Request};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // let url = "https://localhost:8843";
     let url = "http://localhost:7777";
     let timeout = ClientTimeouts::disabled();
 

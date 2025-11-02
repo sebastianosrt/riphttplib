@@ -1,5 +1,6 @@
 use super::error::ProtocolError;
 use super::{Request, Response};
+use crate::utils::apply_redirect;
 use async_trait::async_trait;
 
 mod client;
@@ -31,7 +32,30 @@ impl std::fmt::Display for HttpProtocol {
 
 #[async_trait(?Send)]
 pub trait Protocol {
-    async fn response(&self, request: Request) -> Result<Response, ProtocolError>;
+    async fn execute(&self, request: &Request) -> Result<Response, ProtocolError>;
+
+    async fn response(&self, mut request: Request) -> Result<Response, ProtocolError> {
+        const MAX_REDIRECTS: u32 = 30;
+        let mut redirect_count = 0u32;
+
+        loop {
+            let response = self.execute(&request).await?;
+
+            if apply_redirect(&mut request, &response)? {
+                redirect_count += 1;
+
+                if redirect_count > MAX_REDIRECTS {
+                    return Err(ProtocolError::RequestFailed(
+                        "Too many redirects".to_string(),
+                    ));
+                }
+
+                continue;
+            }
+
+            return Ok(response);
+        }
+    }
 
     async fn send_request(&self, request: Request) -> Result<Response, ProtocolError> {
         self.response(request).await

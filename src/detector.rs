@@ -1,9 +1,9 @@
-use crate::Client;
 use crate::h1::protocol::H1;
+use crate::h2::connection::H2Connection;
 use crate::types::protocol::HttpProtocol;
 use crate::types::{ClientTimeouts, ProtocolError};
-use crate::h2::connection::H2Connection;
 use crate::utils::{header_value, parse_target};
+use crate::Client;
 use std::time::Duration;
 
 const DETECTION_TIMEOUT: Duration = Duration::from_secs(3);
@@ -15,25 +15,23 @@ pub struct DetectedProtocol {
 
 pub fn extract_alt_svc_port(header: Option<&str>) -> Option<u16> {
     match header {
-        Some(header) => {
-            header
-                .split(',')
-                .filter_map(|entry| {
-                    let entry = entry.trim();
-                    if !entry.starts_with("h3") {
-                        return None;
-                    }
-        
-                    let start = entry.find('"')?;
-                    let end = entry[start + 1..].find('"')? + start + 1;
-                    let value = &entry[start + 1..end];
-        
-                    let port_part = value.split(':').last()?;
-                    port_part.parse::<u16>().ok()
-                })
-                .next()
-        },
-        None => None
+        Some(header) => header
+            .split(',')
+            .filter_map(|entry| {
+                let entry = entry.trim();
+                if !entry.starts_with("h3") {
+                    return None;
+                }
+
+                let start = entry.find('"')?;
+                let end = entry[start + 1..].find('"')? + start + 1;
+                let value = &entry[start + 1..end];
+
+                let port_part = value.split(':').last()?;
+                port_part.parse::<u16>().ok()
+            })
+            .next(),
+        None => None,
     }
 }
 
@@ -63,13 +61,17 @@ pub async fn detect_protocol(url: &str) -> Result<Vec<DetectedProtocol>, Protoco
                     port: Some(port),
                 });
             }
-        },
+        }
         Err(_) => {}
     }
     // detect h2
     if H2Connection::connect(url, &timeouts).await.is_ok() {
         supported.push(DetectedProtocol {
-            protocol: if scheme == "http" { HttpProtocol::H2C } else { HttpProtocol::Http2 },
+            protocol: if scheme == "http" {
+                HttpProtocol::H2C
+            } else {
+                HttpProtocol::Http2
+            },
             port: Some(port),
         });
     }

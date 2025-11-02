@@ -2,7 +2,6 @@ use riphttplib::h1::H1;
 use riphttplib::h2::H2;
 use riphttplib::h3::H3;
 use riphttplib::types::{ClientTimeouts, Protocol, Request};
-use serde_json::json;
 use std::time::Duration;
 
 #[tokio::main]
@@ -12,24 +11,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "trailers: trailer".to_string(),
         "TE: trailers".to_string(),
     ];
-    let body = "test";
     let trailers = vec!["trailer: test".to_string()];
 
     let request = Request::new("https://quic.tech:8443", "GET")?
-        .header("aser-ugent: riphttplib/0.1.0")
-        // .headers(headers)
-        .body(body)
-        // .json(json!({ "test": "value" }))
-        // .params(vec![("test", "h3-features")])
-        // .cookies(vec![("session", "test")])
-        // .timeout(ClientTimeouts {
-        //     connect: Some(Duration::from_secs(15)),
-        //     read: Some(Duration::from_secs(45)),
-        //     write: Some(Duration::from_secs(15)),
-        // })
-        // .follow_redirects(true)
-        // .trailers(trailers);
-        ;
+        .header("user-ugent: riphttplib/0.1.0")
+        .headers(headers)
+        .query(vec![("test", "param")])
+        .body("body")
+        .cookies(vec![("session", "test")])
+        .timeout(ClientTimeouts {
+            connect: Some(Duration::from_secs(15)),
+            read: Some(Duration::from_secs(45)),
+            write: Some(Duration::from_secs(15)),
+        })
+        .follow_redirects(true)
+        .trailers(trailers);
 
     {
         let client = H1::new();

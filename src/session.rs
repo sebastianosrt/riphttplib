@@ -1,8 +1,11 @@
 use crate::h1::protocol::H1;
 use crate::h2::protocol::H2;
 use crate::h3::protocol::H3;
-use crate::types::{ClientTimeouts, Header, ProtocolError, ProxySettings, Request, Response};
-use bytes::Bytes;
+use crate::types::{
+    ClientTimeouts, Header, Protocol, ProtocolError, ProxySettings, Request, RequestBuilder,
+    RequestBuilderOps, Response,
+};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -22,10 +25,7 @@ impl CookieStore {
             combined.insert(name.clone(), value.clone());
         }
 
-        request.cookies = combined
-            .into_iter()
-            .map(|(name, value)| (name, value))
-            .collect();
+        request.cookies = combined.into_iter().collect();
     }
 
     fn update_from_response(&mut self, response: &Response) {
@@ -64,101 +64,6 @@ impl fmt::Display for CookieStore {
     }
 }
 
-
-/*
-// TODO complete sessions
- __attrs__ = [
-        "auth",
-        "params",
-        "verify",
-        "cert",
-        "stream",
-        "trust_env",
-        "max_redirects",
-    ]
-*/
-
-#[derive(Debug, Clone, Default)]
-pub struct SessionRequestOptions {
-    pub headers: Option<Vec<Header>>,
-    pub body: Option<Bytes>,
-    pub trailers: Option<Vec<Header>>,
-    pub cookies: Option<Vec<(String, String)>>,
-    pub params: Option<Vec<(String, String)>>,
-    pub follow_redirects: Option<bool>,
-    pub timeout: Option<ClientTimeouts>,
-    pub proxies: Option<ProxySettings>,
-}
-
-impl SessionRequestOptions {
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_parts(
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Self {
-        Self {
-            headers,
-            body,
-            trailers,
-            cookies,
-            params,
-            follow_redirects,
-            timeout,
-            proxies,
-        }
-    }
-}
-
-fn build_request(
-    method: &str,
-    url: &str,
-    options: &SessionRequestOptions,
-) -> Result<Request, ProtocolError> {
-    let mut request = Request::new(url, method)?;
-
-    if let Some(headers) = &options.headers {
-        let serialized: Vec<String> = headers.iter().map(|h| h.to_string()).collect();
-        request = request.headers(serialized);
-    }
-
-    if let Some(body) = &options.body {
-        request = request.body(body.clone());
-    }
-
-    if let Some(trailers) = &options.trailers {
-        let serialized: Vec<String> = trailers.iter().map(|h| h.to_string()).collect();
-        request = request.trailers(serialized);
-    }
-
-    if let Some(cookies) = &options.cookies {
-        request = request.cookies(cookies.clone());
-    }
-
-    if let Some(params) = &options.params {
-        request = request.params(params.clone());
-    }
-
-    if let Some(allow) = options.follow_redirects {
-        request = request.follow_redirects(allow);
-    }
-
-    if let Some(timeout) = &options.timeout {
-        request = request.timeout(timeout.clone());
-    }
-
-    if let Some(proxies) = &options.proxies {
-        request = request.proxies(proxies.clone());
-    }
-
-    Ok(request)
-}
-
 fn apply_default_headers(defaults: &[Header], request: &mut Request) {
     for header in defaults {
         let exists = request
@@ -171,888 +76,246 @@ fn apply_default_headers(defaults: &[Header], request: &mut Request) {
     }
 }
 
-/// Shared behaviour for HTTP sessions.
-trait SessionInner {
-    fn default_headers(&self) -> &Vec<Header>;
-    fn default_headers_mut(&mut self) -> &mut Vec<Header>;
-    fn cookie_store(&self) -> &CookieStore;
-    fn cookie_store_mut(&mut self) -> &mut CookieStore;
+pub struct Session<P>
+where
+    P: Protocol + Clone,
+{
+    client: P,
+    default_headers: Vec<Header>,
+    pub cookies: CookieStore,
+}
+
+impl<P> Session<P>
+where
+    P: Protocol + Clone,
+{
+    pub(crate) fn new(client: P) -> Self {
+        Self {
+            client,
+            default_headers: Vec::new(),
+            cookies: CookieStore::default(),
+        }
+    }
+
+    pub fn add_default_header(&mut self, header: Header) {
+        if !self
+            .default_headers
+            .iter()
+            .any(|h| h.name.eq_ignore_ascii_case(&header.name))
+        {
+            self.default_headers.push(header);
+        }
+    }
+
+    pub fn header(&mut self, header: Header) {
+        self.add_default_header(header);
+    }
+
+    pub fn set_cookie(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.cookies.set_cookie(name, value);
+    }
+
+    pub fn request<'a>(&'a mut self, method: &str, url: &str) -> SessionRequestBuilder<'a, P> {
+        SessionRequestBuilder::new(self, method, url)
+    }
+
+    pub fn get(&mut self, url: &str) -> SessionRequestBuilder<'_, P> {
+        self.request("GET", url)
+    }
+
+    pub fn head(&mut self, url: &str) -> SessionRequestBuilder<'_, P> {
+        self.request("HEAD", url)
+    }
+
+    pub fn post(&mut self, url: &str) -> SessionRequestBuilder<'_, P> {
+        self.request("POST", url)
+    }
+
+    pub fn put(&mut self, url: &str) -> SessionRequestBuilder<'_, P> {
+        self.request("PUT", url)
+    }
+
+    pub fn patch(&mut self, url: &str) -> SessionRequestBuilder<'_, P> {
+        self.request("PATCH", url)
+    }
+
+    pub fn delete(&mut self, url: &str) -> SessionRequestBuilder<'_, P> {
+        self.request("DELETE", url)
+    }
+
+    pub fn options(&mut self, url: &str) -> SessionRequestBuilder<'_, P> {
+        self.request("OPTIONS", url)
+    }
+
+    pub async fn send(&mut self, mut request: Request) -> Result<Response, ProtocolError> {
+        self.prepare_request(&mut request);
+        let response = self.client.send_request(request).await?;
+        self.finalize_response(&response);
+        Ok(response)
+    }
 
     fn prepare_request(&self, request: &mut Request) {
-        apply_default_headers(self.default_headers(), request);
-        self.cookie_store().apply_to_request(request);
+        apply_default_headers(&self.default_headers, request);
+        self.cookies.apply_to_request(request);
     }
 
     fn finalize_response(&mut self, response: &Response) {
-        self.cookie_store_mut().update_from_response(response);
+        self.cookies.update_from_response(response);
     }
 
-    fn add_default_header(&mut self, header: Header) {
-        let exists = self
-            .default_headers()
-            .iter()
-            .any(|h| h.name.eq_ignore_ascii_case(&header.name));
-        if !exists {
-            self.default_headers_mut().push(header);
-        }
-    }
-
-    fn set_cookie(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        self.cookie_store_mut().set_cookie(name, value);
-    }
-}
-
-pub struct H1Session {
-    client: H1,
-    default_headers: Vec<Header>,
-    pub cookies: CookieStore,
-}
-
-impl H1Session {
-    pub(crate) fn new(client: H1) -> Self {
-        Self {
-            client,
-            default_headers: Vec::new(),
-            cookies: CookieStore::default(),
-        }
-    }
-
-    pub fn add_default_header(&mut self, header: Header) {
-        SessionInner::add_default_header(self, header);
-    }
-
-    pub fn set_cookie(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        SessionInner::set_cookie(self, name, value);
-    }
-
-    pub async fn send(&mut self, mut request: Request) -> Result<Response, ProtocolError> {
-        SessionInner::prepare_request(self, &mut request);
-        let response = self.client.send_request(request).await?;
-        SessionInner::finalize_response(self, &response);
-        Ok(response)
-    }
-
-    pub async fn request(
-        &mut self,
-        method: &str,
-        url: &str,
-        options: SessionRequestOptions,
-    ) -> Result<Response, ProtocolError> {
-        let request = build_request(method, url, &options)?;
-        self.send(request).await
-    }
-
-    async fn request_with_parts(
-        &mut self,
-        method: &str,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        let options = SessionRequestOptions::from_parts(
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        );
-        self.request(method, url, options).await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn get(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "GET",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn post(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "POST",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn put(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "PUT",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn delete(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "DELETE",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn patch(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "PATCH",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn head(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "HEAD",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn options(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "OPTIONS",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    pub fn client(&self) -> &H1 {
+    pub fn client(&self) -> &P {
         &self.client
     }
 }
 
-impl SessionInner for H1Session {
-    fn default_headers(&self) -> &Vec<Header> {
-        &self.default_headers
-    }
+pub type H1Session = Session<H1>;
+pub type H2Session = Session<H2>;
+pub type H3Session = Session<H3>;
 
-    fn default_headers_mut(&mut self) -> &mut Vec<Header> {
-        &mut self.default_headers
-    }
-
-    fn cookie_store(&self) -> &CookieStore {
-        &self.cookies
-    }
-
-    fn cookie_store_mut(&mut self) -> &mut CookieStore {
-        &mut self.cookies
-    }
+pub struct SessionRequestBuilder<'a, P>
+where
+    P: Protocol + Clone,
+{
+    session: &'a mut Session<P>,
+    builder: RequestBuilder,
 }
 
-pub struct H2Session {
-    client: H2,
-    default_headers: Vec<Header>,
-    pub cookies: CookieStore,
-}
-
-impl H2Session {
-    pub(crate) fn new(client: H2) -> Self {
+impl<'a, P> SessionRequestBuilder<'a, P>
+where
+    P: Protocol + Clone,
+{
+    fn new(session: &'a mut Session<P>, method: &str, url: &str) -> Self {
+        let method = method.to_ascii_uppercase();
         Self {
-            client,
-            default_headers: Vec::new(),
-            cookies: CookieStore::default(),
+            session,
+            builder: RequestBuilder::new(url, method),
         }
     }
 
-    pub fn add_default_header(&mut self, header: Header) {
-        SessionInner::add_default_header(self, header);
+    pub fn header(mut self, header: &str) -> Self {
+        RequestBuilderOps::header(&mut self, header);
+        self
     }
 
-    pub fn set_cookie(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        SessionInner::set_cookie(self, name, value);
+    pub fn header_value(mut self, header: Header) -> Self {
+        RequestBuilderOps::header_value(&mut self, header);
+        self
     }
 
-    pub async fn send(&mut self, mut request: Request) -> Result<Response, ProtocolError> {
-        SessionInner::prepare_request(self, &mut request);
-        let response = self.client.send_request(request).await?;
-        SessionInner::finalize_response(self, &response);
-        Ok(response)
+    pub fn headers(mut self, headers: Vec<String>) -> Self {
+        RequestBuilderOps::headers(&mut self, headers);
+        self
     }
 
-    pub async fn request(
-        &mut self,
-        method: &str,
-        url: &str,
-        options: SessionRequestOptions,
-    ) -> Result<Response, ProtocolError> {
-        let request = build_request(method, url, &options)?;
-        self.send(request).await
+    pub fn header_values(mut self, headers: Vec<Header>) -> Self {
+        RequestBuilderOps::header_values(&mut self, headers);
+        self
     }
 
-    async fn request_with_parts(
-        &mut self,
-        method: &str,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        let options = SessionRequestOptions::from_parts(
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        );
-        self.request(method, url, options).await
+    pub fn trailer(mut self, trailer: &str) -> Self {
+        RequestBuilderOps::trailer(&mut self, trailer);
+        self
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn get(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "GET",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
+    pub fn trailer_value(mut self, trailer: Header) -> Self {
+        RequestBuilderOps::trailer_value(&mut self, trailer);
+        self
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn post(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "POST",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
+    pub fn trailers(mut self, trailers: Vec<String>) -> Self {
+        RequestBuilderOps::trailers(&mut self, trailers);
+        self
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn put(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "PUT",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
+    pub fn trailer_values(mut self, trailers: Vec<Header>) -> Self {
+        RequestBuilderOps::trailer_values(&mut self, trailers);
+        self
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn delete(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "DELETE",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
+    pub fn body<B>(mut self, body: B) -> Self
+    where
+        B: AsRef<[u8]>,
+    {
+        RequestBuilderOps::body(&mut self, body);
+        self
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn patch(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "PATCH",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
+    pub fn json(mut self, value: Value) -> Self {
+        RequestBuilderOps::json(&mut self, value);
+        self
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn head(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "HEAD",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
+    pub fn data<I, K, V>(mut self, data: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        RequestBuilderOps::data(&mut self, data);
+        self
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn options(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "OPTIONS",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
+    pub fn query<I, K, V>(mut self, query: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        RequestBuilderOps::query(&mut self, query);
+        self
     }
 
-    pub fn client(&self) -> &H2 {
-        &self.client
+    pub fn cookies<I, K, V>(mut self, cookies: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        RequestBuilderOps::cookies(&mut self, cookies);
+        self
+    }
+
+    pub fn allow_redirects(mut self, allow: bool) -> Self {
+        RequestBuilderOps::allow_redirects(&mut self, allow);
+        self
+    }
+
+    pub fn follow_redirects(self, allow: bool) -> Self {
+        self.allow_redirects(allow)
+    }
+
+    pub fn timeout(mut self, timeout: ClientTimeouts) -> Self {
+        RequestBuilderOps::timeout(&mut self, timeout);
+        self
+    }
+
+    pub fn proxies(mut self, proxies: ProxySettings) -> Self {
+        RequestBuilderOps::proxies(&mut self, proxies);
+        self
+    }
+
+    pub fn proxy(mut self, proxy_url: &str) -> Self {
+        RequestBuilderOps::proxy(&mut self, proxy_url);
+        self
+    }
+
+    pub fn without_proxies(mut self) -> Self {
+        RequestBuilderOps::without_proxies(&mut self);
+        self
+    }
+
+    pub async fn send(self) -> Result<Response, ProtocolError> {
+        let SessionRequestBuilder { session, builder } = self;
+        let request = builder.build()?;
+        session.send(request).await
     }
 }
 
-impl SessionInner for H2Session {
-    fn default_headers(&self) -> &Vec<Header> {
-        &self.default_headers
-    }
-
-    fn default_headers_mut(&mut self) -> &mut Vec<Header> {
-        &mut self.default_headers
-    }
-
-    fn cookie_store(&self) -> &CookieStore {
-        &self.cookies
-    }
-
-    fn cookie_store_mut(&mut self) -> &mut CookieStore {
-        &mut self.cookies
-    }
-}
-
-pub struct H3Session {
-    client: H3,
-    default_headers: Vec<Header>,
-    pub cookies: CookieStore,
-}
-
-impl H3Session {
-    pub(crate) fn new(client: H3) -> Self {
-        Self {
-            client,
-            default_headers: Vec::new(),
-            cookies: CookieStore::default(),
-        }
-    }
-
-    pub fn add_default_header(&mut self, header: Header) {
-        SessionInner::add_default_header(self, header);
-    }
-
-    pub fn set_cookie(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        SessionInner::set_cookie(self, name, value);
-    }
-
-    pub async fn send(&mut self, mut request: Request) -> Result<Response, ProtocolError> {
-        SessionInner::prepare_request(self, &mut request);
-        let response = self.client.send_request(request).await?;
-        SessionInner::finalize_response(self, &response);
-        Ok(response)
-    }
-
-    pub async fn request(
-        &mut self,
-        method: &str,
-        url: &str,
-        options: SessionRequestOptions,
-    ) -> Result<Response, ProtocolError> {
-        let request = build_request(method, url, &options)?;
-        self.send(request).await
-    }
-
-    async fn request_with_parts(
-        &mut self,
-        method: &str,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        let options = SessionRequestOptions::from_parts(
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        );
-        self.request(method, url, options).await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn get(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "GET",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn post(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "POST",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn put(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "PUT",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn delete(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "DELETE",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn patch(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "PATCH",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn head(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "HEAD",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn options(
-        &mut self,
-        url: &str,
-        headers: Option<Vec<Header>>,
-        body: Option<Bytes>,
-        trailers: Option<Vec<Header>>,
-        cookies: Option<Vec<(String, String)>>,
-        follow_redirects: Option<bool>,
-        params: Option<Vec<(String, String)>>,
-        timeout: Option<ClientTimeouts>,
-        proxies: Option<ProxySettings>,
-    ) -> Result<Response, ProtocolError> {
-        self.request_with_parts(
-            "OPTIONS",
-            url,
-            headers,
-            body,
-            trailers,
-            cookies,
-            follow_redirects,
-            params,
-            timeout,
-            proxies,
-        )
-        .await
-    }
-
-    pub fn client(&self) -> &H3 {
-        &self.client
-    }
-}
-
-impl SessionInner for H3Session {
-    fn default_headers(&self) -> &Vec<Header> {
-        &self.default_headers
-    }
-
-    fn default_headers_mut(&mut self) -> &mut Vec<Header> {
-        &mut self.default_headers
-    }
-
-    fn cookie_store(&self) -> &CookieStore {
-        &self.cookies
-    }
-
-    fn cookie_store_mut(&mut self) -> &mut CookieStore {
-        &mut self.cookies
+impl<'a, P> RequestBuilderOps for SessionRequestBuilder<'a, P>
+where
+    P: Protocol + Clone,
+{
+    fn builder_mut(&mut self) -> &mut RequestBuilder {
+        &mut self.builder
     }
 }

@@ -1,3 +1,4 @@
+use crate::types::error::ProtocolError;
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,11 +19,19 @@ pub struct ProxyConfig {
 
 impl ProxyConfig {
     pub fn new(url: Url, proxy_type: ProxyType) -> Self {
+        let username = url.username();
+        let username = if username.is_empty() {
+            None
+        } else {
+            Some(username.to_string())
+        };
+        let password = url.password().map(|value| value.to_string());
+
         Self {
             url,
             proxy_type,
-            username: None,
-            password: None,
+            username,
+            password,
         }
     }
 
@@ -202,5 +211,36 @@ impl ProxySettings {
                 None
             },
         })
+    }
+
+    pub fn set_proxy_url(&mut self, url: Url) -> Result<(), ProtocolError> {
+        let scheme = url.scheme().to_ascii_lowercase();
+        match scheme.as_str() {
+            "http" => {
+                self.http = Some(url);
+            }
+            "https" => {
+                self.https = Some(url);
+            }
+            "socks" | "socks5" => {
+                self.socks = Some(ProxyConfig::socks5(url));
+            }
+            "socks4" => {
+                self.socks = Some(ProxyConfig::socks4(url));
+            }
+            other => {
+                return Err(ProtocolError::InvalidProxy(format!(
+                    "Unsupported proxy scheme '{}'",
+                    other
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_proxy(&mut self, proxy: &str) -> Result<(), ProtocolError> {
+        let parsed = Url::parse(proxy)
+            .map_err(|err| ProtocolError::InvalidProxy(format!("{} ({})", proxy, err)))?;
+        self.set_proxy_url(parsed)
     }
 }

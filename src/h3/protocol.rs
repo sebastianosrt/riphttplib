@@ -1,10 +1,10 @@
-use crate::PreparedRequest;
 use crate::h3::connection::H3Connection;
 use crate::types::{
     ClientTimeouts, FrameType, FrameTypeH3, H3StreamErrorKind, Header, Protocol, ProtocolError,
     Request, Response, ResponseFrame,
 };
-use crate::utils::{apply_redirect, timeout_result, HTTP_VERSION_3_0};
+use crate::utils::{timeout_result, HTTP_VERSION_3_0};
+use crate::PreparedRequest;
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -58,12 +58,7 @@ impl H3 {
             timeout_result(timeouts.connect, connection.create_request_stream()).await?;
 
         let prepared = request.prepare_request()?;
-        let mut header_block_entries = prepared.pseudo_headers.clone();
-        let mut normalized_headers = prepared.headers.clone();
-        for header in &mut normalized_headers {
-            header.normalize();
-        }
-        header_block_entries.extend(normalized_headers);
+        let header_block_entries = prepared.header_block();
 
         let header_block = timeout_result(
             timeouts.write,
@@ -122,9 +117,10 @@ impl H3 {
                     .write_all(&serialized_trailers)
                     .await
                     .map_err(|e| {
-                        ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(
-                            format!("Failed to send trailers: {}", e),
-                        ))
+                        ProtocolError::H3StreamError(H3StreamErrorKind::ProtocolViolation(format!(
+                            "Failed to send trailers: {}",
+                            e
+                        )))
                     })
             })
             .await?;
@@ -144,45 +140,21 @@ impl H3 {
     }
 
     pub async fn send_request(&self, request: Request) -> Result<Response, ProtocolError> {
-        self.send_request_internal(request, 0).await
+        <Self as Protocol>::response(self, request).await
     }
 
-    fn send_request_internal<'a>(
-        &'a self,
-        mut request: Request,
-        redirect_count: u32,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ProtocolError>> + 'a>>
-    {
-        Box::pin(async move {
-            const MAX_REDIRECTS: u32 = 30;
-
-            if redirect_count > MAX_REDIRECTS {
-                return Err(ProtocolError::RequestFailed(
-                    "Too many redirects".to_string(),
-                ));
-            }
-
-            let timeouts = request.timeouts(&self.timeouts);
-            let mut connection = timeout_result(
-                timeouts.connect,
-                H3Connection::connect_with_target(&request.target),
-            )
+    async fn perform_request(&self, request: &Request) -> Result<Response, ProtocolError> {
+        let timeouts = request.timeouts(&self.timeouts);
+        let mut connection = timeout_result(
+            timeouts.connect,
+            H3Connection::connect_with_target(&request.target),
+        )
+        .await?;
+        let stream_id = self
+            .send_request_inner(&mut connection, request, &timeouts)
             .await?;
-            let stream_id = self
-                .send_request_inner(&mut connection, &request, &timeouts)
-                .await?;
-            let response = self
-                .read_response(&mut connection, stream_id, &timeouts)
-                .await?;
-
-            if apply_redirect(&mut request, &response)? {
-                return self
-                    .send_request_internal(request, redirect_count + 1)
-                    .await;
-            }
-
-            Ok(response)
-        })
+        self.read_response(&mut connection, stream_id, &timeouts)
+            .await
     }
 
     async fn read_response(
@@ -308,7 +280,7 @@ impl H3 {
 
 #[async_trait(?Send)]
 impl Protocol for H3 {
-    async fn response(&self, request: Request) -> Result<Response, ProtocolError> {
-        self.send_request(request).await
+    async fn execute(&self, request: &Request) -> Result<Response, ProtocolError> {
+        self.perform_request(request).await
     }
 }

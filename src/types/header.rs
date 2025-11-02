@@ -5,7 +5,8 @@ pub struct Header {
 }
 
 impl Header {
-    pub fn new(name: String, value: String) -> Self { // TODO consider using &str
+    pub fn new(name: String, value: String) -> Self {
+        // TODO consider using &str
         Self {
             name: name,
             value: Some(value),
@@ -13,7 +14,10 @@ impl Header {
     }
 
     pub fn new_valueless(name: String) -> Self {
-        Self { name: name, value: None }
+        Self {
+            name: name,
+            value: None,
+        }
     }
 
     pub fn normalize(&mut self) -> &mut Self {

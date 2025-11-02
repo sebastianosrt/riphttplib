@@ -28,6 +28,7 @@ pub enum ProtocolError {
     // Method and target errors
     InvalidMethod(String),
     InvalidTarget(String),
+    InvalidProxy(String),
 }
 
 #[derive(Debug)]
@@ -113,6 +114,7 @@ impl std::fmt::Display for ProtocolError {
             // Method and target errors
             ProtocolError::InvalidMethod(msg) => write!(f, "Invalid method: {}", msg),
             ProtocolError::InvalidTarget(msg) => write!(f, "Invalid target: {}", msg),
+            ProtocolError::InvalidProxy(msg) => write!(f, "Invalid proxy: {}", msg),
         }
     }
 }

@@ -1,8 +1,8 @@
 use crate::stream::{create_stream, TransportStream};
 use crate::types::{ClientTimeouts, Header, Protocol, ProtocolError, Request, Response};
 use crate::utils::{
-    apply_redirect, timeout_result, CHUNKED_ENCODING, CONTENT_LENGTH_HEADER, CRLF, HOST_HEADER,
-    HTTP_VERSION_1_1, TRANSFER_ENCODING_HEADER,
+    timeout_result, CHUNKED_ENCODING, CONTENT_LENGTH_HEADER, CRLF, HOST_HEADER, HTTP_VERSION_1_1,
+    TRANSFER_ENCODING_HEADER,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -31,40 +31,15 @@ impl H1 {
     }
 
     pub async fn send_request(&self, request: Request) -> Result<Response, ProtocolError> {
-        self.send_request_internal(request, 0).await
+        <Self as Protocol>::response(self, request).await
     }
 
-    fn send_request_internal<'a>(
-        &'a self,
-        mut request: Request,
-        redirect_count: u32,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, ProtocolError>> + 'a>>
-    {
-        Box::pin(async move {
-            const MAX_REDIRECTS: u32 = 30;
-
-            if redirect_count > MAX_REDIRECTS {
-                return Err(ProtocolError::RequestFailed(
-                    "Too many redirects".to_string(),
-                ));
-            }
-
-            let timeouts = request.timeouts(&self.timeouts);
-            let mut stream = self.open_stream(&request, &timeouts).await?;
-            self.write_request(&mut stream, &request, &timeouts).await?;
-
-            let response = self
-                .read_response(&mut stream, &request.method, &timeouts)
-                .await?;
-
-            if apply_redirect(&mut request, &response)? {
-                return self
-                    .send_request_internal(request, redirect_count + 1)
-                    .await;
-            }
-
-            Ok(response)
-        })
+    async fn perform_request(&self, request: &Request) -> Result<Response, ProtocolError> {
+        let timeouts = request.timeouts(&self.timeouts);
+        let mut stream = self.open_stream(request, &timeouts).await?;
+        self.write_request(&mut stream, request, &timeouts).await?;
+        self.read_response(&mut stream, &request.method, &timeouts)
+            .await
     }
 
     async fn open_stream(
@@ -313,16 +288,11 @@ impl H1 {
             let (status, protocol) = Self::parse_status_line(&status_line)?;
             let headers = self.read_header_block(reader, timeouts).await?;
 
-            // if status < 200 {
-            //     // 101 Switching Protocols is a final response (RFC 7231 §6.2.2)
-            //     if status != 101 {
-            //         continue;
-            //     }
-            // }
-
-            let (body, trailers) = self
-                .read_body(reader, &headers, method, status, timeouts)
-                .await?;
+            let (body, trailers) = if !Self::response_has_body(method, status) {
+                (Bytes::new(), Vec::new())
+            } else { 
+                self.read_body(reader, &headers, timeouts).await?
+            };
 
             let cookies = Response::collect_cookies(&headers);
 
@@ -393,14 +363,8 @@ impl H1 {
         &self,
         reader: &mut R,
         headers: &[Header],
-        method: &str,
-        status: u16,
         timeouts: &ClientTimeouts,
     ) -> Result<(Bytes, Vec<Header>), ProtocolError> {
-        if !Self::response_has_body(method, status) {
-            return Ok((Bytes::new(), Vec::new()));
-        }
-
         let is_chunked = headers.iter().any(|h| {
             h.name.to_lowercase() == TRANSFER_ENCODING_HEADER
                 && h.value
@@ -610,8 +574,8 @@ impl H1 {
 
 #[async_trait(?Send)]
 impl Protocol for H1 {
-    async fn response(&self, request: Request) -> Result<Response, ProtocolError> {
-        self.send_request(request).await
+    async fn execute(&self, request: &Request) -> Result<Response, ProtocolError> {
+        self.perform_request(request).await
     }
 
     async fn send_raw(&self, target: &str, raw_request: Bytes) -> Result<Response, ProtocolError> {
@@ -628,62 +592,6 @@ impl Protocol for H1 {
         self.write_to_stream(&mut stream, raw_request.as_ref(), timeouts.write)
             .await?;
 
-        let mut raw_response = Vec::new();
-
-        match &mut stream {
-            TransportStream::Tcp(tcp) => {
-                tcp.read_to_end(&mut raw_response)
-                    .await
-                    .map_err(ProtocolError::Io)?;
-            }
-            TransportStream::Tls(tls) => {
-                tls.read_to_end(&mut raw_response)
-                    .await
-                    .map_err(ProtocolError::Io)?;
-            }
-        }
-
-        let response_str = std::str::from_utf8(&raw_response)
-            .map_err(|_| ProtocolError::InvalidResponse("Response was not valid UTF-8".into()))?;
-
-        let (status_line, rest) = response_str
-            .split_once(CRLF)
-            .ok_or_else(|| ProtocolError::InvalidResponse("Missing status line".into()))?;
-
-        let (status, protocol) = Self::parse_status_line(status_line)?;
-
-        let mut header_lines = Vec::new();
-        let mut body_start = 0usize;
-        let mut offset = status_line.len() + CRLF.len();
-
-        for line in rest.split(CRLF) {
-            if line.is_empty() {
-                body_start = offset + CRLF.len();
-                break;
-            }
-            header_lines.push(line.to_string());
-            offset += line.len() + CRLF.len();
-        }
-
-        let headers = header_lines
-            .into_iter()
-            .filter_map(|line| line.split_once(':').map(|(name, value)| Header::new(name.to_lowercase(), value.trim().to_string())))
-            .collect::<Vec<_>>();
-
-        let body = if body_start < raw_response.len() {
-            Bytes::copy_from_slice(&raw_response[body_start..])
-        } else {
-            Bytes::new()
-        };
-
-        Ok(Response {
-            status,
-            protocol,
-            headers,
-            body,
-            trailers: None,
-            frames: None,
-            cookies: Vec::new(),
-        })
+        self.read_response(&mut stream, "RAW", &timeouts).await
     }
 }

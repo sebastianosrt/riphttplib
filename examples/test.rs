@@ -17,21 +17,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let request = Request::new("https://lahore.wordcamp.org", "POST")?
-            .header("user-agent: Mozilla/5.0 (X11; Linux x86_64; rv:142.0) Gecko/20100101 Firefox/142.0")
-            .header("bug-bounty: scan")
-            .header("te: trailers")
-            .body("aaaaaaa")
-            .trailer("test: test")
-            .trailer("test: testaaaaaaaaaaaaaaaa")
-            .trailer("content-length: 10000")
-            .trailer("expect: 100-continue")
-            .timeout(timeouts.clone())
-            .follow_redirects(false);
+        .header(
+            "user-agent: Mozilla/5.0 (X11; Linux x86_64; rv:142.0) Gecko/20100101 Firefox/142.0",
+        )
+        .header("bug-bounty: scan")
+        .header("te: trailers")
+        .body("aaaaaaa")
+        .trailer("test: test")
+        .trailer("test: testaaaaaaaaaaaaaaaa")
+        .trailer("content-length: 10000")
+        .trailer("expect: 100-continue")
+        .timeout(timeouts.clone())
+        .follow_redirects(false);
     {
-        
         // let client = H3::new();
         // let response = client.response(request.clone()).await?;
-        
+
         let response = H3::timeouts(timeouts.clone()).send_request(request).await?;
 
         println!("\n{} {}", response.protocol, response.status);
@@ -44,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for header in &val {
                     println!("{}", header);
                 }
-            },
+            }
             None => {}
         }
         // println!("\n{}", response.text());

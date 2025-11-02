@@ -1,6 +1,6 @@
 use super::Protocol;
-use crate::types::{ClientTimeouts, ProtocolError, RequestBuilder, Response};
 use crate::types::request::RequestBuilderOps;
+use crate::types::{ClientTimeouts, ProtocolError, ProxySettings, RequestBuilder, Response};
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -38,8 +38,13 @@ where
         self
     }
 
-    pub fn data(mut self, body: impl AsRef<str>) -> Self {
-        RequestBuilderOps::data(&mut self, body);
+    pub fn data<I, K, V>(mut self, data: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        RequestBuilderOps::data(&mut self, data);
         self
     }
 
@@ -53,13 +58,13 @@ where
         self
     }
 
-    pub fn params<I, K, V>(mut self, params: I) -> Self
+    pub fn query<I, K, V>(mut self, query: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
         V: Into<String>,
     {
-        RequestBuilderOps::params(&mut self, params);
+        RequestBuilderOps::query(&mut self, query);
         self
     }
 
@@ -90,6 +95,21 @@ where
 
     pub fn timeout(mut self, timeout: ClientTimeouts) -> Self {
         RequestBuilderOps::timeout(&mut self, timeout);
+        self
+    }
+
+    pub fn proxies(mut self, proxies: ProxySettings) -> Self {
+        RequestBuilderOps::proxies(&mut self, proxies);
+        self
+    }
+
+    pub fn proxy(mut self, proxy_url: &str) -> Self {
+        RequestBuilderOps::proxy(&mut self, proxy_url);
+        self
+    }
+
+    pub fn without_proxies(mut self) -> Self {
+        RequestBuilderOps::without_proxies(&mut self);
         self
     }
 }

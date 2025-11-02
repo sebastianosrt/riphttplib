@@ -20,7 +20,7 @@ mod tests {
     #[test]
     fn path_merges_params_with_existing_query() -> Result<(), ProtocolError> {
         let request = Request::new("https://example.com/base?existing=1", "GET")?
-            .params(vec![("foo", "bar baz"), ("multi", "value")]);
+            .query(vec![("foo", "bar baz"), ("multi", "value")]);
 
         assert_eq!(request.path(), "/base?existing=1&foo=bar+baz&multi=value");
         Ok(())
@@ -82,9 +82,9 @@ mod tests {
     #[test]
     fn prepare_headers_respects_existing_values() -> Result<(), ProtocolError> {
         let request = Request::new("https://example.com", "POST")?
-            .header("Content-Type: text/plain")
-            .header("User-Agent: custom-agent")
-            .header("Cookie: manual=1");
+            .try_header("Content-Type: text/plain")?
+            .try_header("User-Agent: custom-agent")?
+            .try_header("Cookie: manual=1")?;
 
         let headers = request.prepare_headers();
         assert_eq!(header_count(&headers, "content-type"), 1);
@@ -123,10 +123,10 @@ mod tests {
     #[test]
     fn prepare_request_produces_consistent_structure() -> Result<(), ProtocolError> {
         let request = Request::new("https://example.com/api", "POST")?
-            .params(vec![("k", "v")])
+            .query(vec![("k", "v")])
             .cookies(vec![("session", "abc")])
             .data(vec![("foo", "bar")])
-            .trailers(vec!["checksum: 123".to_string()]);
+            .try_trailers(vec!["checksum: 123".to_string()])?;
 
         let prepared = request.prepare_request()?;
         assert_eq!(prepared.method, "POST");

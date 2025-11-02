@@ -86,13 +86,24 @@ pub fn parse_header(header: &str) -> Option<Header> {
     }
 }
 
-// TODO write better
-pub fn parse_headers(headers: Vec<String>) -> Vec<Header> {
-    let mut out = Vec::new();
-    for header in &headers {
-        out.push(parse_header(header).unwrap());
-    }
-    out
+fn parse_header_list(entries: Vec<String>, kind: &str) -> Result<Vec<Header>, ProtocolError> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            let text = entry.trim();
+            parse_header(text).ok_or_else(|| {
+                ProtocolError::MalformedHeaders(format!("Invalid {} '{}'", kind, text))
+            })
+        })
+        .collect()
+}
+
+pub fn parse_headers(headers: Vec<String>) -> Result<Vec<Header>, ProtocolError> {
+    parse_header_list(headers, "header")
+}
+
+pub fn parse_trailers(trailers: Vec<String>) -> Result<Vec<Header>, ProtocolError> {
+    parse_header_list(trailers, "trailer")
 }
 
 pub fn header_value<'a>(headers: &'a [Header], name: &str) -> Option<&'a str> {

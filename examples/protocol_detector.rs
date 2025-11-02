@@ -1,5 +1,5 @@
+use riphttplib::detector::detect_protocol;
 use riphttplib::types::protocol::HttpProtocol;
-use riphttplib::detector::{detect_protocol};
 use std::time::Instant;
 
 #[tokio::main]
@@ -21,10 +21,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Supported protocols:");
                 for detected in &result {
                     match detected.protocol {
-                        HttpProtocol::Http1 => println!(" - HTTP/1.1"),
-                        HttpProtocol::Http2 => println!(" - HTTP/2"),
-                        HttpProtocol::H2C => println!(" - HTTP/2 (h2c)"),
-                        HttpProtocol::Http3 => println!(" - HTTP/3"),
+                        HttpProtocol::Http1 => println!("HTTP/1.1"),
+                        HttpProtocol::Http2 => println!("HTTP/2"),
+                        HttpProtocol::H2C => println!("HTTP/2 (h2c)"),
+                        HttpProtocol::Http3 => println!("HTTP/3"),
                     }
                 }
             }

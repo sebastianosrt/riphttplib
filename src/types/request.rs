@@ -1,15 +1,15 @@
-use bytes::Bytes;
-use serde_json::Value;
-use url::{form_urlencoded, Url};
 use super::error::ProtocolError;
 use super::timeouts::ClientTimeouts;
 use super::{Header, Target};
-use crate::types::proxy::{ProxyConfig, ProxySettings};
-use crate::utils::{
-    ensure_user_agent, parse_headers, parse_target, APPLICATION_JSON, CONTENT_TYPE_HEADER,
-    COOKIE_HEADER,
-};
 use crate::parse_header;
+use crate::types::proxy::ProxySettings;
+use crate::utils::{
+    ensure_user_agent, parse_headers, parse_target, parse_trailers, APPLICATION_JSON,
+    CONTENT_TYPE_HEADER, COOKIE_HEADER,
+};
+use bytes::Bytes;
+use serde_json::Value;
+use url::form_urlencoded;
 
 const APPLICATION_X_WWW_FORM_URLENCODED: &str = "application/x-www-form-urlencoded";
 
@@ -71,9 +71,39 @@ pub struct PreparedRequest {
     pub trailers: Vec<Header>,
 }
 
+impl PreparedRequest {
+    pub fn normalized_headers(&self) -> Vec<Header> {
+        let mut headers = self.headers.clone();
+        for header in &mut headers {
+            header.normalize();
+        }
+        headers
+    }
+
+    pub fn header_block(&self) -> Vec<Header> {
+        let mut block = self.pseudo_headers.clone();
+        block.extend(self.normalized_headers());
+        block
+    }
+}
+
 #[derive(Debug)]
 pub struct RequestBuilder {
     inner: Result<Request, ProtocolError>,
+}
+
+enum HeaderKind {
+    Header,
+    Trailer,
+}
+
+impl HeaderKind {
+    fn description(&self) -> &'static str {
+        match self {
+            HeaderKind::Header => "header",
+            HeaderKind::Trailer => "trailer",
+        }
+    }
 }
 
 impl RequestBuilder {
@@ -91,7 +121,7 @@ impl RequestBuilder {
         self.inner
     }
 
-pub fn take(&mut self) -> Result<Request, ProtocolError> {
+    pub fn take(&mut self) -> Result<Request, ProtocolError> {
         std::mem::replace(
             &mut self.inner,
             Err(ProtocolError::RequestFailed(
@@ -99,77 +129,98 @@ pub fn take(&mut self) -> Result<Request, ProtocolError> {
             )),
         )
     }
+
+    fn push_parsed_header(&mut self, kind: HeaderKind, header: Header) {
+        if let Ok(request) = self.inner.as_mut() {
+            match kind {
+                HeaderKind::Header => request.header_mut(header),
+                HeaderKind::Trailer => request.trailer_mut(header),
+            }
+        }
+    }
+
+    fn push_header_text(&mut self, kind: HeaderKind, text: &str) {
+        if self.inner.is_err() {
+            return;
+        }
+
+        let header_text = text.trim();
+        let parsed = parse_header(header_text).ok_or_else(|| {
+            ProtocolError::MalformedHeaders(format!(
+                "Invalid {} '{}'",
+                kind.description(),
+                header_text
+            ))
+        });
+
+        match parsed {
+            Ok(header) => self.push_parsed_header(kind, header),
+            Err(err) => self.inner = Err(err),
+        }
+    }
 }
 
 pub trait RequestBuilderOps {
     fn builder_mut(&mut self) -> &mut RequestBuilder;
 
     fn header(&mut self, header: &str) -> &mut Self {
-        let builder = self.builder_mut();
-        if builder.inner.is_err() {
-            return self;
-        }
+        self.builder_mut()
+            .push_header_text(HeaderKind::Header, header);
+        self
+    }
 
-        let header_text = header.trim();
-        let parsed = match parse_header(header_text) {
-            Some(parsed) => parsed,
-            None => {
-                builder.inner = Err(ProtocolError::MalformedHeaders(format!(
-                    "Invalid header '{}'",
-                    header_text
-                )));
-                return self;
-            }
-        };
-
-        if let Ok(request) = builder.inner.as_mut() {
-            request.header_mut(parsed);
-        }
-
+    fn header_value(&mut self, header: Header) -> &mut Self {
+        self.builder_mut()
+            .push_parsed_header(HeaderKind::Header, header);
         self
     }
 
     fn headers(&mut self, headers: Vec<String>) -> &mut Self {
+        let builder = self.builder_mut();
         for header in headers {
-            if self.builder_mut().inner.is_err() {
+            if builder.inner.is_err() {
                 break;
             }
-            self.header(header.as_str());
+            builder.push_header_text(HeaderKind::Header, &header);
+        }
+        self
+    }
+
+    fn header_values(&mut self, headers: Vec<Header>) -> &mut Self {
+        let builder = self.builder_mut();
+        for header in headers {
+            builder.push_parsed_header(HeaderKind::Header, header);
         }
         self
     }
 
     fn trailer(&mut self, trailer: &str) -> &mut Self {
-        let builder = self.builder_mut();
-        if builder.inner.is_err() {
-            return self;
-        }
-
-        let trailer_text = trailer.trim();
-        let parsed = match parse_header(trailer_text) {
-            Some(parsed) => parsed,
-            None => {
-                builder.inner = Err(ProtocolError::MalformedHeaders(format!(
-                    "Invalid trailer '{}'",
-                    trailer_text
-                )));
-                return self;
-            }
-        };
-
-        if let Ok(request) = builder.inner.as_mut() {
-            request.trailer_mut(parsed);
-        }
-
+        self.builder_mut()
+            .push_header_text(HeaderKind::Trailer, trailer);
         self
     }
 
     fn trailers(&mut self, trailers: Vec<String>) -> &mut Self {
+        let builder = self.builder_mut();
         for trailer in trailers {
-            if self.builder_mut().inner.is_err() {
+            if builder.inner.is_err() {
                 break;
             }
-            self.trailer(trailer.as_str());
+            builder.push_header_text(HeaderKind::Trailer, &trailer);
+        }
+        self
+    }
+
+    fn trailer_value(&mut self, trailer: Header) -> &mut Self {
+        self.builder_mut()
+            .push_parsed_header(HeaderKind::Trailer, trailer);
+        self
+    }
+
+    fn trailer_values(&mut self, trailers: Vec<Header>) -> &mut Self {
+        let builder = self.builder_mut();
+        for trailer in trailers {
+            builder.push_parsed_header(HeaderKind::Trailer, trailer);
         }
         self
     }
@@ -188,21 +239,26 @@ pub trait RequestBuilderOps {
         self
     }
 
-    fn data(&mut self, data: impl AsRef<str>) -> &mut Self {
-        if let Ok(request) = self.builder_mut().inner.as_mut() {
-            request.set_data(data.as_ref());
-        }
-        self
-    }
-
-    fn params<I, K, V>(&mut self, params: I) -> &mut Self
+    fn data<I, K, V>(&mut self, data: I) -> &mut Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
         V: Into<String>,
     {
         if let Ok(request) = self.builder_mut().inner.as_mut() {
-            request.set_params(params);
+            request.set_data(data);
+        }
+        self
+    }
+
+    fn query<I, K, V>(&mut self, query: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        if let Ok(request) = self.builder_mut().inner.as_mut() {
+            request.set_params(query);
         }
         self
     }
@@ -229,6 +285,40 @@ pub trait RequestBuilderOps {
     fn timeout(&mut self, timeout: ClientTimeouts) -> &mut Self {
         if let Ok(request) = self.builder_mut().inner.as_mut() {
             request.set_timeout(timeout);
+        }
+        self
+    }
+
+    fn proxies(&mut self, proxies: ProxySettings) -> &mut Self {
+        if let Ok(request) = self.builder_mut().inner.as_mut() {
+            request.proxies = Some(proxies);
+        }
+        self
+    }
+
+    fn proxy(&mut self, proxy_url: &str) -> &mut Self {
+        let builder = self.builder_mut();
+        if builder.inner.is_err() {
+            return self;
+        }
+
+        let result = {
+            let request = builder
+                .inner
+                .as_mut()
+                .expect("checked inner state before proxy update");
+            request.set_proxy(proxy_url)
+        };
+
+        if let Err(err) = result {
+            builder.inner = Err(err);
+        }
+        self
+    }
+
+    fn without_proxies(&mut self) -> &mut Self {
+        if let Ok(request) = self.builder_mut().inner.as_mut() {
+            request.proxies = None;
         }
         self
     }
@@ -265,17 +355,22 @@ impl RequestBuilder {
         RequestBuilderOps::json(self, value)
     }
 
-    pub fn data(&mut self, data: impl AsRef<str>) -> &mut Self {
-        RequestBuilderOps::data(self, data)
-    }
-
-    pub fn params<I, K, V>(&mut self, params: I) -> &mut Self
+    pub fn data<I, K, V>(&mut self, data: I) -> &mut Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
         V: Into<String>,
     {
-        RequestBuilderOps::params(self, params)
+        RequestBuilderOps::data(self, data)
+    }
+
+    pub fn query<I, K, V>(&mut self, query: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        RequestBuilderOps::query(self, query)
     }
 
     pub fn cookies<I, K, V>(&mut self, cookies: I) -> &mut Self
@@ -294,13 +389,25 @@ impl RequestBuilder {
     pub fn timeout(&mut self, timeout: ClientTimeouts) -> &mut Self {
         RequestBuilderOps::timeout(self, timeout)
     }
+
+    pub fn proxies(&mut self, proxies: ProxySettings) -> &mut Self {
+        RequestBuilderOps::proxies(self, proxies)
+    }
+
+    pub fn proxy(&mut self, proxy_url: &str) -> &mut Self {
+        RequestBuilderOps::proxy(self, proxy_url)
+    }
+
+    pub fn without_proxies(&mut self) -> &mut Self {
+        RequestBuilderOps::without_proxies(self)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Request {
     pub target: Target,
     pub method: String,
-    pub params: Vec<(String, String)>,
+    pub query: Vec<(String, String)>,
     pub headers: Vec<Header>,
     pub trailers: Vec<Header>,
     pub cookies: Vec<(String, String)>,
@@ -317,7 +424,7 @@ impl Request {
         Ok(Self {
             target: parse_target(target)?,
             method: method.into(),
-            params: Vec::new(),
+            query: Vec::new(),
             headers: Vec::new(),
             cookies: Vec::new(),
             trailers: Vec::new(),
@@ -326,7 +433,7 @@ impl Request {
             data: None,
             timeout: None,
             follow_redirects: true,
-            proxies: None
+            proxies: None,
         })
     }
 
@@ -334,29 +441,61 @@ impl Request {
         RequestBuilder::new(target, method)
     }
 
-    pub fn header(mut self, header: &str) -> Self {
-        let parsed = parse_header(header)
-            .unwrap_or_else(|| panic!("Invalid header '{}': failed to parse", header));
+    pub fn header(self, header: &str) -> Self {
+        self.try_header(header)
+            .unwrap_or_else(|_| panic!("Invalid header '{}': failed to parse", header.trim()))
+    }
+
+    pub fn try_header(mut self, header: &str) -> Result<Self, ProtocolError> {
+        let parsed = parse_header(header.trim()).ok_or_else(|| {
+            ProtocolError::MalformedHeaders(format!("Invalid header '{}'", header.trim()))
+        })?;
         self.header_mut(parsed);
-        self
+        Ok(self)
     }
 
-    pub fn headers(mut self, headers: Vec<String>) -> Self {
-        let parsed = parse_headers(headers);
+    pub fn headers(self, headers: Vec<String>) -> Self {
+        self.try_headers(headers)
+            .unwrap_or_else(|err| panic!("Failed to parse headers: {:?}", err))
+    }
+
+    pub fn try_headers(mut self, headers: Vec<String>) -> Result<Self, ProtocolError> {
+        let parsed = parse_headers(headers)?;
         self.headers_mut(parsed);
+        Ok(self)
+    }
+
+    pub fn headers_from(mut self, headers: Vec<Header>) -> Self {
+        self.headers_mut(headers);
         self
     }
 
-    pub fn trailer(mut self, header: &str) -> Self {
-        let parsed = parse_header(header)
-            .unwrap_or_else(|| panic!("Invalid trailer '{}': failed to parse", header));
+    pub fn trailer(self, header: &str) -> Self {
+        self.try_trailer(header)
+            .unwrap_or_else(|_| panic!("Invalid trailer '{}': failed to parse", header.trim()))
+    }
+
+    pub fn try_trailer(mut self, header: &str) -> Result<Self, ProtocolError> {
+        let parsed = parse_header(header.trim()).ok_or_else(|| {
+            ProtocolError::MalformedHeaders(format!("Invalid trailer '{}'", header.trim()))
+        })?;
         self.trailer_mut(parsed);
-        self
+        Ok(self)
     }
 
-    pub fn trailers(mut self, headers: Vec<String>) -> Self {
-        let parsed = parse_headers(headers);
+    pub fn trailers(self, headers: Vec<String>) -> Self {
+        self.try_trailers(headers)
+            .unwrap_or_else(|err| panic!("Failed to parse trailers: {:?}", err))
+    }
+
+    pub fn try_trailers(mut self, headers: Vec<String>) -> Result<Self, ProtocolError> {
+        let parsed = parse_trailers(headers)?;
         self.trailers_mut(parsed);
+        Ok(self)
+    }
+
+    pub fn trailers_from(mut self, headers: Vec<Header>) -> Self {
+        self.trailers_mut(headers);
         self
     }
 
@@ -370,21 +509,23 @@ impl Request {
         self
     }
 
-    pub fn data<T>(mut self, data: T) -> Self
-    where
-        T: Into<FormBody>,
-    {
-        self.set_data(data);
-        self
-    }
-
-    pub fn params<I, K, V>(mut self, params: I) -> Self
+    pub fn data<I, K, V>(mut self, data: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
         V: Into<String>,
     {
-        self.set_params(params);
+        self.set_data(data);
+        self
+    }
+
+    pub fn query<I, K, V>(mut self, query: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.set_params(query);
         self
     }
 
@@ -435,24 +576,32 @@ impl Request {
         self.data = None;
     }
 
-    pub fn set_data<T>(&mut self, data: T)
-    where
-        T: Into<FormBody>,
-    {
-        let form_body: FormBody = data.into();
-        let encoded = form_body.encode();
-        self.body = Some(Bytes::from(encoded.into_bytes()));
-        self.data = Some(form_body);
-        self.json = None;
-    }
-
-    pub fn set_params<I, K, V>(&mut self, params: I)
+    pub fn set_data<I, K, V>(&mut self, data: I)
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
         V: Into<String>,
     {
-        self.params = params
+        let fields: Vec<(String, String)> = data
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
+
+        let form_body = FormBody::Fields(fields);
+        let encoded = form_body.encode();
+
+        self.body = Some(Bytes::from(encoded.into_bytes()));
+        self.data = Some(form_body);
+        self.json = None;
+    }
+
+    pub fn set_params<I, K, V>(&mut self, query: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.query = query
             .into_iter()
             .map(|(key, value)| (key.into(), value.into()))
             .collect();
@@ -484,8 +633,8 @@ impl Request {
 
         let existing_query = self.target.url.query();
 
-        if self.params.is_empty() {
-            // Fast path when no params
+        if self.query.is_empty() {
+            // Fast path when no query
             match existing_query {
                 Some(query) => {
                     let mut result = String::with_capacity(path.len() + query.len() + 1);
@@ -500,7 +649,7 @@ impl Request {
             // TODO write better
             // Estimate capacity to reduce allocations
             let estimated_param_size: usize = self
-                .params
+                .query
                 .iter()
                 .map(|(k, v)| k.len() + v.len() + 3) // +3 for =, &, and URL encoding overhead
                 .sum();
@@ -512,7 +661,7 @@ impl Request {
 
             let mut serializer =
                 form_urlencoded::Serializer::new(String::with_capacity(estimated_param_size));
-            for (key, value) in &self.params {
+            for (key, value) in &self.query {
                 serializer.append_pair(key, value);
             }
             let new_query = serializer.finish();
@@ -542,13 +691,10 @@ impl Request {
             .filter(|h| !h.name.starts_with(':'))
             .cloned()
             .collect();
-        
+
         if let Some(cookie_value) = self.cookie_header_value() {
             if !Self::has_header(&headers, COOKIE_HEADER) {
-                headers.push(Header::new(
-                    COOKIE_HEADER.to_string(),
-                    cookie_value,
-                ));
+                headers.push(Header::new(COOKIE_HEADER.to_string(), cookie_value));
             }
         }
 
@@ -627,7 +773,7 @@ impl Request {
                 if !pseudo_headers.iter().any(|h| h.name == ":path") {
                     pseudo_headers.push(Header::new(
                         ":path".to_string(),
-                        request.path().to_string(), // path with query params
+                        request.path().to_string(), // path with query query
                     ));
                 }
                 if !pseudo_headers.iter().any(|h| h.name == ":scheme") {
@@ -714,61 +860,24 @@ impl Request {
         self
     }
 
-    pub fn http_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
-        let mut proxies = self.proxies.unwrap_or_default();
-        proxies.http = Some(Url::parse(proxy_url.as_ref())?);
-        self.proxies = Some(proxies);
+    pub fn proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, ProtocolError> {
+        self.set_proxy(proxy_url)?;
         Ok(self)
     }
 
-    pub fn https_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
-        let mut proxies = self.proxies.unwrap_or_default();
-        proxies.https = Some(Url::parse(proxy_url.as_ref())?);
-        self.proxies = Some(proxies);
-        Ok(self)
+    pub fn set_proxy<S: AsRef<str>>(&mut self, proxy_url: S) -> Result<(), ProtocolError> {
+        let inserted = self.proxies.is_none();
+        let settings = self.proxies.get_or_insert_with(ProxySettings::default);
+        if let Err(err) = settings.set_proxy(proxy_url.as_ref()) {
+            if inserted {
+                self.proxies = None;
+            }
+            return Err(err);
+        }
+        Ok(())
     }
 
-    pub fn socks5_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
-        let mut proxies = self.proxies.unwrap_or_default();
-        proxies.socks = Some(ProxyConfig::socks5(Url::parse(proxy_url.as_ref())?));
-        self.proxies = Some(proxies);
-        Ok(self)
-    }
-
-    pub fn socks5_proxy_auth<S: AsRef<str>>(
-        mut self,
-        proxy_url: S,
-        username: String,
-        password: String,
-    ) -> Result<Self, url::ParseError> {
-        let mut proxies = self.proxies.unwrap_or_default();
-        proxies.socks =
-            Some(ProxyConfig::socks5(Url::parse(proxy_url.as_ref())?).auth(username, password));
-        self.proxies = Some(proxies);
-        Ok(self)
-    }
-
-    pub fn socks4_proxy<S: AsRef<str>>(mut self, proxy_url: S) -> Result<Self, url::ParseError> {
-        let mut proxies = self.proxies.unwrap_or_default();
-        proxies.socks = Some(ProxyConfig::socks4(Url::parse(proxy_url.as_ref())?));
-        self.proxies = Some(proxies);
-        Ok(self)
-    }
-
-    pub fn socks4_proxy_auth<S: AsRef<str>>(
-        mut self,
-        proxy_url: S,
-        username: String,
-    ) -> Result<Self, url::ParseError> {
-        let mut proxies = self.proxies.unwrap_or_default();
-        proxies.socks = Some(
-            ProxyConfig::socks4(Url::parse(proxy_url.as_ref())?).auth(username, String::new()),
-        );
-        self.proxies = Some(proxies);
-        Ok(self)
-    }
-
-pub fn without_proxies(mut self) -> Self {
+    pub fn without_proxies(mut self) -> Self {
         self.proxies = None;
         self
     }

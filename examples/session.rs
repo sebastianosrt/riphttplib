@@ -1,28 +1,21 @@
-use riphttplib::{H1, Header};
+use riphttplib::types::ClientTimeouts;
+use riphttplib::{Header, H1};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = H1::new().session();
 
-    session.add_default_header(Header::new(
+    session.header(Header::new(
         "user-agent".into(),
-        "riphttplib-session-example/0.1".into(),
+        "riphttplib-session-example/0.2".into(),
     ));
-    session.add_default_header(Header::new("accept".into(), "text/html".into()));
+    session.header(Header::new("accept".into(), "text/html".into()));
     session.set_cookie("example-cookie", "hello-world");
 
     let first_response = session
-        .get(
-            "https://quic.tech:8443",
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        .get("https://httpbin.org/anything/session")
+        .query(vec![("first", "true")])
+        .send()
         .await?;
     println!(
         "First response: {} {} (frames: {})",
@@ -38,18 +31,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("  captured {} frame(s)", frames.len());
     }
 
+    let timeouts = ClientTimeouts {
+        connect: Some(std::time::Duration::from_secs(5)),
+        read: Some(std::time::Duration::from_secs(10)),
+        write: Some(std::time::Duration::from_secs(5)),
+    };
+
     let second_response = session
-        .get(
-            "https://quic.tech:8443",
-            Some(vec![Header::new("accept-language".into(), "en-US".into())]),
-            None,
-            None,
-            Some(vec![("demo".to_string(), "1".to_string())]),
-            Some(true),
-            None,
-            None,
-            None,
-        )
+        .get("https://httpbin.org/anything/session")
+        .header_value(Header::new("accept-language".into(), "en-US".into()))
+        .cookies(vec![("demo", "1")])
+        .allow_redirects(true)
+        .timeout(timeouts)
+        .send()
         .await?;
     println!(
         "Second response: {} {} (frames: {})",

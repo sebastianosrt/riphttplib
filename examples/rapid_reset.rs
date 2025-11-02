@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timeout = ClientTimeouts::disabled();
 
     let req = Request::new(url, "GET")?;
-    let headers =Request::prepare_pseudo_headers(&req)?;
+    let headers = Request::prepare_pseudo_headers(&req)?;
     let mut connection = H2Connection::connect(url, &timeout).await?;
     let mut stream_id = connection.create_stream().await?;
 
@@ -35,29 +35,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 end_stream,
                 is_trailer,
             } => {
-                println!(
-                    "  → HEADERS response (end_stream: {}, is_trailer: {})",
-                    end_stream, is_trailer
-                );
-                for header in headers {
-                    println!("    {}: {:?}", header.name, header.value);
-                }
                 if *end_stream {
-                    println!("  → Stream ended with headers");
+                    println!("Stream ended with headers");
                 }
             }
             StreamEvent::Data {
                 payload,
                 end_stream,
             } => {
-                println!("  → DATA response (end_stream: {})", end_stream);
-                println!("    Data: {}", String::from_utf8_lossy(&payload));
                 if *end_stream {
-                    println!("  → Stream ended with data");
+                    println!("Stream ended with data");
                 }
             }
             StreamEvent::RstStream { error_code } => {
-                println!("  → RST_STREAM received! Error code: {:?}", error_code);
+                println!("RST_STREAM Error code: {:?}", error_code);
             }
         }
     };
