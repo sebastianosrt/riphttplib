@@ -38,11 +38,12 @@ impl H1 {
         let timeouts = request.timeouts(&self.timeouts);
         let mut stream = self.open_stream(request, &timeouts).await?;
         self.write_request(&mut stream, request, &timeouts).await?;
-        self.read_response(&mut stream, &request.method, &timeouts)
+        let read_body = !request.method.eq_ignore_ascii_case("HEAD");
+        self.read_response(&mut stream, read_body, &timeouts)
             .await
     }
 
-    async fn open_stream(
+    pub async fn open_stream(
         &self,
         request: &Request,
         timeouts: &ClientTimeouts,
@@ -134,7 +135,7 @@ impl H1 {
         .await
     }
 
-    async fn write_request(
+    pub async fn write_request(
         &self,
         stream: &mut TransportStream,
         request: &Request,
@@ -207,7 +208,7 @@ impl H1 {
         self.write_to_stream(stream, &req, timeouts.write).await
     }
 
-    async fn write_to_stream(
+    pub async fn write_to_stream(
         &self,
         stream: &mut TransportStream,
         data: &[u8],
@@ -222,21 +223,21 @@ impl H1 {
         .await
     }
 
-    async fn read_response(
+    pub async fn read_response(
         &self,
         stream: &mut TransportStream,
-        method: &str,
+        read_body: bool,
         timeouts: &ClientTimeouts,
     ) -> Result<Response, ProtocolError> {
         match stream {
             TransportStream::Tcp(tcp) => {
                 let mut reader = BufReader::new(tcp);
-                self.read_response_from_reader(&mut reader, method, timeouts)
+                self.read_response_from_reader(&mut reader, read_body, timeouts)
                     .await
             }
             TransportStream::Tls(tls) => {
                 let mut reader = BufReader::new(tls);
-                self.read_response_from_reader(&mut reader, method, timeouts)
+                self.read_response_from_reader(&mut reader, read_body, timeouts)
                     .await
             }
         }
@@ -245,7 +246,7 @@ impl H1 {
     async fn read_response_from_reader<R: AsyncBufRead + Unpin>(
         &self,
         reader: &mut R,
-        method: &str,
+        read_body: bool,
         timeouts: &ClientTimeouts,
     ) -> Result<Response, ProtocolError> {
         loop {
@@ -288,9 +289,9 @@ impl H1 {
             let (status, protocol) = Self::parse_status_line(&status_line)?;
             let headers = self.read_header_block(reader, timeouts).await?;
 
-            let (body, trailers) = if !Self::response_has_body(method, status) {
+            let (body, trailers) = if !read_body || !Self::response_has_body(status) {
                 (Bytes::new(), Vec::new())
-            } else { 
+            } else {
                 self.read_body(reader, &headers, timeouts).await?
             };
 
@@ -520,8 +521,8 @@ impl H1 {
     }
 
     // TODO write better
-    fn response_has_body(method: &str, status: u16) -> bool {
-        if method.eq_ignore_ascii_case("HEAD") || (100..200).contains(&status) {
+    fn response_has_body(status: u16) -> bool {
+        if (100..200).contains(&status) {
             return false;
         }
 
@@ -592,6 +593,6 @@ impl Protocol for H1 {
         self.write_to_stream(&mut stream, raw_request.as_ref(), timeouts.write)
             .await?;
 
-        self.read_response(&mut stream, "RAW", &timeouts).await
+        self.read_response(&mut stream, true, &timeouts).await
     }
 }
