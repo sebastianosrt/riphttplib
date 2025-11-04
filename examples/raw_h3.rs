@@ -2,7 +2,6 @@ use riphttplib::connection::HttpConnection;
 use riphttplib::h3::connection::{H3ConnectOptions, H3Connection, H3ReadOptions};
 use riphttplib::types::{ClientTimeouts, FrameH3, FrameType, FrameTypeH3};
 use riphttplib::Request;
-use tokio::io::AsyncWriteExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
