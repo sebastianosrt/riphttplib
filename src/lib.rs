@@ -1,3 +1,4 @@
+pub mod connection;
 pub mod detector;
 pub mod h1;
 pub mod h2;
@@ -8,6 +9,7 @@ pub mod stream;
 pub mod types;
 pub mod utils;
 
+pub use connection::*;
 pub use detector::*;
 pub use h1::protocol::H1;
 pub use h2::protocol::H2;

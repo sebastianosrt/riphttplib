@@ -6,7 +6,7 @@ use std::time::Duration;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = H1::new();
     let req1 = Request::new("https://httpbin.org/get", "GET")?.query(vec![("req1","param")]).header("Connection: keep-alive");
-    let req2 = Request::new("https://httpbin.org/get", "GET")?.query(vec![("req2","param")]);
+    let req2 = req1.clone().query(vec![("req2","param")]);
     let timeouts = ClientTimeouts {
             connect: Some(Duration::from_secs(15)),
             read: Some(Duration::from_secs(45)),

@@ -15,6 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut connection = H2Connection::connect(url, &timeout).await?;
         let stream_id = connection.create_stream().await?;
 
+        // chain frames and send all
         FrameH2::header(stream_id, &headers, false, false)?
             .chain(FrameH2::continuation(stream_id, &cont_header, false)?.repeat(10))
             .chain(FrameH2::continuation(stream_id, &cont_header, true)?)

@@ -6,7 +6,6 @@ pub struct Header {
 
 impl Header {
     pub fn new(name: String, value: String) -> Self {
-        // TODO consider using &str
         Self {
             name: name,
             value: Some(value),

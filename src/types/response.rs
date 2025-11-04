@@ -1,6 +1,7 @@
 use super::{extract_cookies, FrameH2, FrameH3, Header};
 use bytes::Bytes;
 use serde_json::Value;
+use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug, Clone)]
 pub enum ResponseFrame {
@@ -30,5 +31,16 @@ impl Response {
 
     pub fn collect_cookies(headers: &[Header]) -> Vec<(String, String)> {
         extract_cookies(headers)
+    }
+}
+
+impl Display for Response {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(f, "\n{} {}", self.protocol, self.status)?;
+        for header in &self.headers {
+            writeln!(f, "{}", header)?;
+        }
+        writeln!(f)?;
+        write!(f, "{}", self.text())
     }
 }

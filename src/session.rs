@@ -1,6 +1,7 @@
 use crate::h1::protocol::H1;
 use crate::h2::protocol::H2;
 use crate::h3::protocol::H3;
+use crate::parse_header;
 use crate::types::{
     ClientTimeouts, Header, Protocol, ProtocolError, ProxySettings, Request, RequestBuilder,
     RequestBuilderOps, Response,
@@ -107,8 +108,8 @@ where
         }
     }
 
-    pub fn header(&mut self, header: Header) {
-        self.add_default_header(header);
+    pub fn header(&mut self, header: &str) {
+        self.add_default_header(parse_header(header).unwrap());
     }
 
     pub fn set_cookie(&mut self, name: impl Into<String>, value: impl Into<String>) {

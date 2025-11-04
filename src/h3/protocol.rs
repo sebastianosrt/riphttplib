@@ -1,9 +1,9 @@
 use crate::h3::connection::H3Connection;
 use crate::types::{
-    ClientTimeouts, FrameType, FrameTypeH3, H3StreamErrorKind, Header, Protocol, ProtocolError,
-    Request, Response, ResponseFrame,
+    ClientTimeouts, FrameTypeH3, H3StreamErrorKind, Header, Protocol, ProtocolError, Request,
+    Response,
 };
-use crate::utils::{timeout_result, HTTP_VERSION_3_0};
+use crate::utils::timeout_result;
 use crate::PreparedRequest;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -145,9 +145,10 @@ impl H3 {
 
     async fn perform_request(&self, request: &Request) -> Result<Response, ProtocolError> {
         let timeouts = request.timeouts(&self.timeouts);
+        let connect_timeouts = timeouts.clone();
         let mut connection = timeout_result(
             timeouts.connect,
-            H3Connection::connect_with_target(&request.target),
+            H3Connection::connect_with_target_and_timeouts(&request.target, connect_timeouts),
         )
         .await?;
         let stream_id = self
@@ -163,118 +164,9 @@ impl H3 {
         stream_id: u32,
         timeouts: &ClientTimeouts,
     ) -> Result<Response, ProtocolError> {
-        let mut status: Option<u16> = None;
-        let mut headers = Vec::new();
-        let mut body = Vec::new();
-        let mut trailers: Option<Vec<Header>> = None;
-        let mut headers_received = false;
-        let protocol = HTTP_VERSION_3_0.to_string();
-        let mut captured_frames = Vec::new();
-
-        loop {
-            timeout_result(timeouts.read, connection.poll_control()).await?;
-            let frame_opt =
-                timeout_result(timeouts.read, connection.read_request_frame(stream_id)).await?;
-
-            let frame = match frame_opt {
-                Some(frame) => frame,
-                None => {
-                    // Stream has ended, mark it as finished receiving
-                    let _ = connection.stream_finished_receiving(stream_id);
-                    break;
-                }
-            };
-
-            captured_frames.push(ResponseFrame::Http3(frame.clone()));
-
-            match &frame.frame_type {
-                FrameType::H3(FrameTypeH3::Headers) => {
-                    let decoded_headers = timeout_result(
-                        timeouts.read,
-                        connection.decode_headers(stream_id, &frame.payload),
-                    )
-                    .await?;
-
-                    let mut status_code = decoded_headers.iter().find_map(|header| {
-                        (header.name == ":status")
-                            .then(|| header.value.as_ref()?.parse::<u16>().ok())
-                            .flatten()
-                    });
-
-                    if !headers_received {
-                        let code = status_code.take().ok_or_else(|| {
-                            ProtocolError::InvalidResponse(
-                                "Missing :status header in response".to_string(),
-                            )
-                        })?;
-                        if code < 200 {
-                            connection.handle_frame(&frame).await?;
-                            continue;
-                        }
-                        status = Some(code);
-                        headers.extend(
-                            decoded_headers
-                                .iter()
-                                .filter(|h| !h.name.starts_with(':'))
-                                .cloned(),
-                        );
-                        headers_received = true;
-                    } else {
-                        if let Some(code) = status_code {
-                            if code < 200 {
-                                timeout_result(timeouts.read, connection.handle_frame(&frame))
-                                    .await?;
-                                continue;
-                            }
-                        }
-                        let trailer_headers = trailers.get_or_insert_with(Vec::new);
-                        trailer_headers.extend(
-                            decoded_headers
-                                .iter()
-                                .filter(|h| !h.name.starts_with(':'))
-                                .cloned(),
-                        );
-                    }
-
-                    timeout_result(timeouts.read, connection.handle_frame(&frame)).await?;
-                }
-                FrameType::H3(FrameTypeH3::Data) => {
-                    body.extend_from_slice(&frame.payload);
-                    timeout_result(timeouts.read, connection.handle_frame(&frame)).await?;
-                }
-                _ => {
-                    timeout_result(timeouts.read, connection.handle_frame(&frame)).await?;
-                }
-            }
-        }
-
-        let status = status.ok_or_else(|| {
-            ProtocolError::InvalidResponse("No final response received".to_string())
-        })?;
-
-        let trailers = match trailers {
-            Some(t) if !t.is_empty() => Some(t),
-            _ => None,
-        };
-
-        // Clean up the closed stream
-        connection.remove_closed_stream(stream_id);
-
-        let cookies = Response::collect_cookies(&headers);
-
-        Ok(Response {
-            status,
-            protocol,
-            headers,
-            body: Bytes::from(body),
-            trailers,
-            frames: if captured_frames.is_empty() {
-                None
-            } else {
-                Some(captured_frames)
-            },
-            cookies,
-        })
+        connection
+            .read_response_with_timeouts(stream_id, timeouts, None)
+            .await
     }
 }
 

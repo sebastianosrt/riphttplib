@@ -2,6 +2,7 @@ mod state;
 
 pub use state::{ConnectionState, StreamInfo, StreamState};
 
+use crate::connection::HttpConnection;
 use crate::h3::consts::*;
 use crate::h3::framing::{
     SETTINGS_MAX_FIELD_SECTION_SIZE, SETTINGS_QPACK_BLOCKED_STREAMS,
@@ -10,9 +11,10 @@ use crate::h3::framing::{
 use crate::h3::qpack::{QpackDecodeStatus, SharedQpackState};
 use crate::stream::NoCertificateVerification;
 use crate::types::{
-    FrameH3, FrameSink, FrameType, FrameTypeH3, H3StreamErrorKind, Header, ProtocolError, Target,
+    ClientTimeouts, FrameH3, FrameSink, FrameType, FrameTypeH3, H3StreamErrorKind, Header,
+    ProtocolError, Response, ResponseFrame, Target,
 };
-use crate::utils::parse_target;
+use crate::utils::{parse_target, timeout_result, HTTP_VERSION_3_0};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use quinn::{ClientConfig as QuinnClientConfig, Connection, Endpoint, RecvStream, SendStream};
@@ -46,6 +48,19 @@ pub struct H3Connection {
     // QPACK unidirectional streams (optional in this minimal implementation)
     pub qpack_encoder_recv: Option<RecvStream>,
     pub qpack_decoder_recv: Option<RecvStream>,
+    timeouts: ClientTimeouts,
+}
+
+#[derive(Debug, Clone)]
+pub struct H3ConnectOptions {
+    pub target: String,
+    pub timeouts: ClientTimeouts,
+}
+
+#[derive(Debug, Clone)]
+pub struct H3ReadOptions {
+    pub stream_id: u32,
+    pub timeouts: Option<ClientTimeouts>,
 }
 
 impl H3Connection {
@@ -121,15 +136,33 @@ impl H3Connection {
     }
 
     pub async fn connect(target: &str) -> Result<Self, ProtocolError> {
+        Self::connect_with_timeouts(target, ClientTimeouts::default()).await
+    }
+
+    pub async fn connect_with_timeouts(
+        target: &str,
+        timeouts: ClientTimeouts,
+    ) -> Result<Self, ProtocolError> {
         let target = parse_target(target)?;
-        Self::connect_with_target(&target).await
+        Self::connect_with_target_and_timeouts(&target, timeouts).await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn connect_with_target(target: &Target) -> Result<Self, ProtocolError> {
-        Self::connect_inner(target).await
+        Self::connect_with_target_and_timeouts(target, ClientTimeouts::default()).await
     }
 
-    async fn connect_inner(target: &Target) -> Result<Self, ProtocolError> {
+    pub(crate) async fn connect_with_target_and_timeouts(
+        target: &Target,
+        timeouts: ClientTimeouts,
+    ) -> Result<Self, ProtocolError> {
+        Self::connect_inner(target, timeouts).await
+    }
+
+    async fn connect_inner(
+        target: &Target,
+        timeouts: ClientTimeouts,
+    ) -> Result<Self, ProtocolError> {
         let host = target
             .host()
             .ok_or_else(|| ProtocolError::InvalidTarget("Target missing host".to_string()))?;
@@ -141,12 +174,12 @@ impl H3Connection {
             .await
             .map_err(|e| ProtocolError::ConnectionFailed(e.to_string()))?;
 
-        let mut h3_connection = Self::new(connection);
+        let mut h3_connection = Self::new(connection, timeouts);
         h3_connection.perform_handshake().await?;
         Ok(h3_connection)
     }
 
-    pub fn new(connection: Connection) -> Self {
+    pub fn new(connection: Connection, timeouts: ClientTimeouts) -> Self {
         let mut settings = HashMap::new();
         settings.insert(
             SETTINGS_QPACK_MAX_TABLE_CAPACITY,
@@ -180,6 +213,7 @@ impl H3Connection {
             qpack,
             qpack_encoder_recv: None,
             qpack_decoder_recv: None,
+            timeouts,
         }
     }
 
@@ -514,6 +548,125 @@ impl H3Connection {
         self.streams.insert(stream_id, StreamInfo::new(recv_stream));
 
         Ok((stream_id, send_stream))
+    }
+
+    pub async fn read_response_with_timeouts(
+        &mut self,
+        stream_id: u32,
+        timeouts: &ClientTimeouts,
+        frame_handler: Option<&dyn Fn(&FrameH3)>,
+    ) -> Result<Response, ProtocolError> {
+        let mut status: Option<u16> = None;
+        let mut headers = Vec::new();
+        let mut body = Vec::new();
+        let mut trailers: Option<Vec<Header>> = None;
+        let mut headers_received = false;
+        let protocol = HTTP_VERSION_3_0.to_string();
+        let mut captured_frames = Vec::new();
+
+        loop {
+            timeout_result(timeouts.read, self.poll_control()).await?;
+            let frame_opt =
+                timeout_result(timeouts.read, self.read_request_frame(stream_id)).await?;
+
+            let frame = match frame_opt {
+                Some(frame) => frame,
+                None => {
+                    let _ = self.stream_finished_receiving(stream_id);
+                    break;
+                }
+            };
+
+            captured_frames.push(ResponseFrame::Http3(frame.clone()));
+            if let Some(handler) = frame_handler {
+                handler(&frame);
+            }
+
+            match &frame.frame_type {
+                FrameType::H3(FrameTypeH3::Headers) => {
+                    let decoded_headers = timeout_result(
+                        timeouts.read,
+                        self.decode_headers(stream_id, &frame.payload),
+                    )
+                    .await?;
+
+                    let mut status_code = decoded_headers.iter().find_map(|header| {
+                        (header.name == ":status")
+                            .then(|| header.value.as_ref()?.parse::<u16>().ok())
+                            .flatten()
+                    });
+
+                    if !headers_received {
+                        let code = status_code.take().ok_or_else(|| {
+                            ProtocolError::InvalidResponse(
+                                "Missing :status header in response".to_string(),
+                            )
+                        })?;
+                        if code < 200 {
+                            timeout_result(timeouts.read, self.handle_frame(&frame)).await?;
+                            continue;
+                        }
+                        status = Some(code);
+                        headers.extend(
+                            decoded_headers
+                                .iter()
+                                .filter(|h| !h.name.starts_with(':'))
+                                .cloned(),
+                        );
+                        headers_received = true;
+                    } else {
+                        if let Some(code) = status_code {
+                            if code < 200 {
+                                timeout_result(timeouts.read, self.handle_frame(&frame)).await?;
+                                continue;
+                            }
+                        }
+                        let trailer_headers = trailers.get_or_insert_with(Vec::new);
+                        trailer_headers.extend(
+                            decoded_headers
+                                .iter()
+                                .filter(|h| !h.name.starts_with(':'))
+                                .cloned(),
+                        );
+                    }
+
+                    timeout_result(timeouts.read, self.handle_frame(&frame)).await?;
+                }
+                FrameType::H3(FrameTypeH3::Data) => {
+                    body.extend_from_slice(&frame.payload);
+                    timeout_result(timeouts.read, self.handle_frame(&frame)).await?;
+                }
+                _ => {
+                    timeout_result(timeouts.read, self.handle_frame(&frame)).await?;
+                }
+            }
+        }
+
+        let status = status
+            .ok_or_else(|| ProtocolError::InvalidResponse("No final response received".to_string()))?;
+
+        let trailers = match trailers {
+            Some(t) if !t.is_empty() => Some(t),
+            _ => None,
+        };
+
+        self.remove_closed_stream(stream_id);
+
+        let cookies = Response::collect_cookies(&headers);
+
+        Ok(Response {
+            status,
+            protocol,
+            headers,
+            body: Bytes::from(body),
+            trailers,
+            frames: if captured_frames.is_empty() {
+                None
+            } else {
+                Some(captured_frames)
+            },
+            cookies,
+        })
     }
 
     pub async fn read_request_frame(
@@ -946,5 +1099,30 @@ impl FrameSink<FrameH3> for H3Connection {
                 "Attempted to send HTTP/2 frame via an HTTP/3 connection".to_string(),
             )),
         }
+    }
+}
+
+#[async_trait(?Send)]
+impl HttpConnection for H3Connection {
+    type ConnectOptions = H3ConnectOptions;
+    type ReadOptions = H3ReadOptions;
+
+    async fn connect(options: Self::ConnectOptions) -> Result<Self, ProtocolError> {
+        H3Connection::connect_with_timeouts(&options.target, options.timeouts).await
+    }
+
+    async fn read_response(
+        &mut self,
+        options: Self::ReadOptions,
+    ) -> Result<Response, ProtocolError> {
+        let H3ReadOptions {
+            stream_id,
+            timeouts,
+        } = options;
+
+        let selected_timeouts = timeouts.unwrap_or_else(|| self.timeouts.clone());
+
+        self.read_response_with_timeouts(stream_id, &selected_timeouts, None)
+            .await
     }
 }

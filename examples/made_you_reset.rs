@@ -3,6 +3,8 @@ use riphttplib::h2::connection::H2Connection;
 use riphttplib::types::{ClientTimeouts, FrameH2};
 use riphttplib::{FrameBuilderExt, FrameTypeH2, Request};
 
+// https://galbarnahum.com/posts/made-you-reset-technical-details
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = "https://localhost:8443";

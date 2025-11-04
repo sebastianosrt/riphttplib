@@ -28,11 +28,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            println!("Detection completed in {:?}", detect_elapsed);
         }
         Err(err) => {
             eprintln!("Failed to detect protocols: {}", err);
-            println!("Detection failed after {:?}", detect_elapsed);
         }
     }
 

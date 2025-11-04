@@ -5,11 +5,8 @@ use riphttplib::{Header, H1};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = H1::new().session();
 
-    session.header(Header::new(
-        "user-agent".into(),
-        "riphttplib-session-example/0.2".into(),
-    ));
-    session.header(Header::new("accept".into(), "text/html".into()));
+    session.header("user-agent: riphttplib-session-example");
+    session.header("accept: text/html");
     session.set_cookie("example-cookie", "hello-world");
 
     let first_response = session
@@ -39,7 +36,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let second_response = session
         .get("https://httpbin.org/anything/session")
-        .header_value(Header::new("accept-language".into(), "en-US".into()))
         .cookies(vec![("demo", "1")])
         .allow_redirects(true)
         .timeout(timeouts)

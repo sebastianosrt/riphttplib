@@ -13,20 +13,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
     let trailers = vec!["trailer: test".to_string()];
 
+    // create request
     let request = Request::new("https://quic.tech:8443", "GET")?
-        .header("user-ugent: riphttplib/0.1.0")
         .headers(headers)
         .query(vec![("test", "param")])
-        .body("body")
         .cookies(vec![("session", "test")])
+        .body("body")
+        .trailers(trailers)
         .timeout(ClientTimeouts {
             connect: Some(Duration::from_secs(15)),
             read: Some(Duration::from_secs(45)),
             write: Some(Duration::from_secs(15)),
         })
-        .follow_redirects(true)
-        .trailers(trailers);
+        .follow_redirects(true);
 
+    // send request with each protocol
     {
         let client = H1::new();
         let response = client.response(request.clone()).await?;
@@ -39,9 +40,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         // println!("\n{}", response.text());
         println!("\n{}", String::from_utf8_lossy(&response.body));
-        if let Some(frames) = &response.frames {
-            println!("Captured {} frame(s)", frames.len());
-        }
     }
     {
         let client = H2::new();

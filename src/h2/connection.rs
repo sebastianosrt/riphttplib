@@ -2,6 +2,7 @@ mod state;
 
 pub use state::{ConnectionState, StreamEvent, StreamInfo, StreamState};
 
+use crate::connection::HttpConnection;
 use crate::h2::consts::*;
 use crate::h2::framing::RstErrorCode;
 use crate::h2::hpack::HpackCodec;
@@ -40,6 +41,12 @@ pub struct H2Connection {
     auto_flush_bytes: Option<usize>,
     timeouts: ClientTimeouts,
     captured_frames: HashMap<u32, Vec<FrameH2>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct H2ConnectOptions {
+    pub target: String,
+    pub timeouts: ClientTimeouts,
 }
 
 impl H2Connection {
@@ -222,7 +229,6 @@ impl H2Connection {
                 self.hpack.set_encoder_max_table_size(value as usize);
             }
             SETTINGS_ENABLE_PUSH => {
-                // Client ignores server push settings since we don't support it
                 self.remote_settings.insert(id, value);
                 self.peer_allows_push = value != 0;
             }
@@ -1384,5 +1390,22 @@ impl H2Connection {
 
     fn take_captured_frames(&mut self, stream_id: u32) -> Option<Vec<FrameH2>> {
         self.captured_frames.remove(&stream_id)
+    }
+}
+
+#[async_trait(?Send)]
+impl HttpConnection for H2Connection {
+    type ConnectOptions = H2ConnectOptions;
+    type ReadOptions = u32;
+
+    async fn connect(options: Self::ConnectOptions) -> Result<Self, ProtocolError> {
+        H2Connection::connect(&options.target, &options.timeouts).await
+    }
+
+    async fn read_response(
+        &mut self,
+        stream_id: Self::ReadOptions,
+    ) -> Result<Response, ProtocolError> {
+        H2Connection::read_response(self, stream_id).await
     }
 }
