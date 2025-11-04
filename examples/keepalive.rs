@@ -22,11 +22,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     client.write_request(&mut connection, &req2, &timeouts).await?;
     let res = client.read_response(&mut connection, true, &timeouts).await?;
     println!("{}", res.text());
-    
-
-    // let req = "GET / HTTP/1.1\r\nHost: quic.tech\r\n\r\n";
-    // let res = client.send_raw("https://quic.tech", req.into()).await?;
-
 
     Ok(())
 }

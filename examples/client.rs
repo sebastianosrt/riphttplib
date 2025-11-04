@@ -34,12 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("HTTP/1.1");
 
-        println!("\n{} {}", response.protocol, response.status);
-        for header in &response.headers {
-            println!("{}", header);
-        }
-        // println!("\n{}", response.text());
-        println!("\n{}", String::from_utf8_lossy(&response.body));
+        println!("{}", response);    
     }
     {
         let client = H2::new();
@@ -47,11 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         println!("\nHTTP/2");
 
-        println!("\n{} {}", response.protocol, response.status);
-        for header in &response.headers {
-            println!("{}", header);
-        }
-        println!("\n{}", response.text());
+        println!("{}", response);
         if let Some(frames) = &response.frames {
             println!("Captured {} frame(s)", frames.len());
         }
@@ -62,11 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let client = H3::new();
         let response = client.response(request.clone()).await?;
 
-        println!("\n{} {}", response.protocol, response.status);
-        for header in &response.headers {
-            println!("{}", header);
-        }
-        println!("\n{}", response.text());
+        println!("{}", response);
         if let Some(frames) = &response.frames {
             println!("Captured {} frame(s)", frames.len());
         }

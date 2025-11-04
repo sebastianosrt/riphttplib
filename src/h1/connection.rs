@@ -13,11 +13,8 @@ pub struct H1ConnectOptions {
     pub timeouts: ClientTimeouts,
 }
 
-/// Options required to read a response on an HTTP/1.1 connection.
-#[derive(Debug, Clone, Copy)]
-pub struct H1ReadOptions {
-    pub read_body: bool,
-}
+// For HTTP/1.1, reading a response only needs a boolean
+// indicating whether to read the body.
 
 pub struct H1Connection {
     client: H1,
@@ -41,7 +38,7 @@ impl H1Connection {
 #[async_trait(?Send)]
 impl HttpConnection for H1Connection {
     type ConnectOptions = H1ConnectOptions;
-    type ReadOptions = H1ReadOptions;
+    type ReadOptions = bool;
 
     async fn connect(options: Self::ConnectOptions) -> Result<Self, ProtocolError> {
         let H1ConnectOptions { target, timeouts } = options;
@@ -72,12 +69,12 @@ impl HttpConnection for H1Connection {
 
     async fn read_response(
         &mut self,
-        options: Self::ReadOptions,
+        read_body: Self::ReadOptions,
     ) -> Result<Response, ProtocolError> {
         self.client
             .read_response(
                 &mut self.stream,
-                options.read_body,
+                read_body,
                 self.client.get_timeouts(),
             )
             .await

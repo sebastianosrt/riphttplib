@@ -54,7 +54,7 @@ pub async fn detect_protocol(url: &str) -> Result<Vec<DetectedProtocol>, Protoco
                 protocol: HttpProtocol::Http1,
                 port: Some(port),
             });
-            // detect from svc header h3
+            // detect h3 from svc header
             if let Some(port) = extract_alt_svc_port(header_value(&res.headers, "alt-svc")) {
                 supported.push(DetectedProtocol {
                     protocol: HttpProtocol::Http3,

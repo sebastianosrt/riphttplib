@@ -15,11 +15,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}", response);
 
-    // println!("\n{} {}", response.protocol, response.status);
-    // for header in &response.headers {
-    //     println!("{}", header);
-    // }
-    // println!("\n{}", response.json()?.to_string());
-
     Ok(())
 }

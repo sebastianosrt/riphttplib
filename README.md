@@ -4,7 +4,7 @@ riphttplib is a library specifically built for http security testing and exploit
 
 ## Usage
 
-In a Cargo workspace use a git dependency, or download the library and use as path dependency:
+add the package as git dependency to `Cargo.toml`, or download the library and use as path dependency:
 
 ```toml
 [dependencies]
@@ -13,7 +13,7 @@ riphttplib = { git = "https://github.com/sebastianosrt/riphttplib" }
 # riphttplib = { path = "riphttplib" }
 ```
 
-- High‑level client request:
+- client request:
 
 ```rust
 use riphttplib::types::protocol::Client;
@@ -22,13 +22,10 @@ use riphttplib::H2; // or H1 / H3
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response = Client::<H2>::post("https://httpbin.org/post")
-        .header("user-agent: riphttplib")
         .query(vec![("test", "param")])
-        .headers(vec![
-            "test: header".to_string(),
-            "second: header".to_string(),
-        ])
+        .header("test: header".to_string())
         .data(vec![("test", "param")])
+        .trailers(vec!["trailer: test".to_string()])
         .await?;
 
     println!("{}", response);
@@ -42,8 +39,12 @@ use riphttplib::{H1, Header, Request};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut req = Request::new("https://example.com/", "GET")?;
-    req.headers_mut(vec![Header::new("user-agent".into(), "riphttplib".into())]);
+    let mut req = Request::new("https://www.example.com", "POST")?
+            .header("te: trailers")
+            .body("body")
+            .trailer("test: trailer")
+            .timeout(timeouts.clone())
+            .follow_redirects(false));
 
     let client = H1::new(); // H2::new() or H3::new()
     let res = client.send_request(req).await?;
@@ -57,9 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 HTTP2 Example
 
 ```rust
-FrameH2::header(stream_id, &headers, false, false)?
-    .chain(Frame::continuation(stream_id, &cont_header, false)?.repeat(10))
-    .chain(FrameH2::data(stream_id, &bytes, false)?)
+FrameH2::header(stream_id, &headers, end_stream, end_headers)?
+    .chain(Frame::continuation(stream_id, &headers, end_stream)?.repeat(2))
+    .chain(FrameH2::data(stream_id, &bytes, end_stream)?)
     .chain(...)
     .send(&mut connection)
     .await?;
@@ -69,9 +70,9 @@ FrameH2::header(stream_id, &headers, false, false)?
 
 Use the `HttpConnection` trait for per‑connection control. Each protocol provides types and option structs:
 
-- HTTP/1.1: `H1Connection` with `H1ConnectOptions`, `H1ReadOptions`
-- HTTP/2: `H2Connection` with `H2ConnectOptions` (read takes stream id)
-- HTTP/3: `H3Connection` with `H3ConnectOptions`, `H3ReadOptions`
+- HTTP/1.1: `H1Connection` with `H1ConnectOptions`
+- HTTP/2: `H2Connection` with `H2ConnectOptions`
+- HTTP/3: `H3Connection` with `H3ConnectOptions`
 
 HTTP/2 example:
 

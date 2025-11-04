@@ -43,13 +43,7 @@ async fn send(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("{} {}", response.protocol, response.status);
-    for header in &response.headers {
-        println!("{}", header);
-    }
-    if !response.body.is_empty() {
-        println!("\n{}", String::from_utf8_lossy(&response.body));
-    }
+    println!("{}", response);
 
     println!();
     Ok(())

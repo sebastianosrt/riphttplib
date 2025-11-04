@@ -1,5 +1,5 @@
 use riphttplib::connection::HttpConnection;
-use riphttplib::h1::connection::{H1ConnectOptions, H1Connection, H1ReadOptions};
+use riphttplib::h1::connection::{H1ConnectOptions, H1Connection};
 use riphttplib::types::ClientTimeouts;
 
 #[tokio::main]
@@ -21,10 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
     }
 
-    let response = <H1Connection as HttpConnection>::read_response(
-        &mut connection,
-        H1ReadOptions { read_body: true },
-    )
+    let response = <H1Connection as HttpConnection>::read_response(&mut connection, true)
     .await?;
 
     println!("{}", response.status);
