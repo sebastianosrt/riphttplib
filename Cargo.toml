@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-quinn = "=0.11.9"
-rustls = { version = "0.23.32", features = ["ring"] }
+quinn = "0.11.9"
+rustls = { version = "0.23.35", features = ["ring"] }
 tokio = { version = "1.47.1", features = ["net", "rt", "rt-multi-thread", "macros", "io-util"] }
-tokio-rustls = "0.26.4"
+tokio-rustls = { git = "https://github.com/rustls/tokio-rustls", branch = "main", default-features = false, features = ["ring"] }
 bytes = "1.0"
 url = "2.0"
 async-trait = "0.1"
@@ -24,6 +24,3 @@ tokio-test = "0.4"
 
 [lib]
 path = "src/lib.rs"
-
-[patch.crates-io]
-tokio-rustls = { path = "../vendor/tokio-rustls-0.26.4" }
