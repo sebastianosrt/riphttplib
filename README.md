@@ -185,7 +185,7 @@ feel free to to open a pr or directly contact me
 - [ ] logging
 - [ ] [single packet attack](https://portswigger.net/research/smashing-the-state-machine#single-packet-attack)
 - [ ] [single packet attack++](https://flatt.tech/research/posts/beyond-the-limit-expanding-single-packet-race-condition-with-first-sequence-sync/)
-- [ ] single datagram attack
+- [ ] [single datagram attack](https://www.sciencedirect.com/science/article/pii/S0167404825004298?via%3Dihub)
 - [ ] h1 last byte sync
 - [ ] api for race conditions exploit writing
 - [ ] python api [bindings](https://github.com/PyO3/pyo3)?
