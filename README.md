@@ -181,9 +181,13 @@ feel free to to open a pr or directly contact me
 
 ## TODOs
 
-- [] documentation, for now check examples
-- [] [single packet attack](https://portswigger.net/research/smashing-the-state-machine#single-packet-attack)
-- [] [single packet attack++](https://flatt.tech/research/posts/beyond-the-limit-expanding-single-packet-race-condition-with-first-sequence-sync/)
-- [] h1 last byte sync
-- [] api for race conditions exploit writing
-- [] python api [bindings](https://github.com/PyO3/pyo3)?
+- [ ] documentation, for now check examples
+- [ ] logging
+- [ ] [single packet attack](https://portswigger.net/research/smashing-the-state-machine#single-packet-attack)
+- [ ] [single packet attack++](https://flatt.tech/research/posts/beyond-the-limit-expanding-single-packet-race-condition-with-first-sequence-sync/)
+- [ ] single datagram attack
+- [ ] h1 last byte sync
+- [ ] api for race conditions exploit writing
+- [ ] python api [bindings](https://github.com/PyO3/pyo3)?
+- [ ] custom quic impl https://www.imperva.com/blog/quic-leak-cve-2025-54939-new-high-risk-pre-handshake-remote-denial-of-service-in-lsquic-quic-implementation/ https://seemann.io/posts/2024-03-19---exploiting-quics-connection-id-management/
+- [ ] protocol fuzzer
